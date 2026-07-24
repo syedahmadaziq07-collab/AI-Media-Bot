@@ -1,0 +1,147 @@
+Bina Telegram bot AI video/image generation service dalam Python, nama projek "JagoVideo Clone". Guna python-telegram-bot v21+ (async), SQLite untuk database (guna aiosqlite), dan fal.ai sebagai API provider untuk video/image generation (guna fal-client Python SDK).
+
+## STRUKTUR PROJEK
+jagovideo-bot/
+├── bot.py                 # Entry point, setup application, register handlers
+├── config.py               # Load .env vars (BOT_TOKEN, FAL_KEY, PAYMENT_KEY, ADMIN_IDS)
+├── database/
+│   ├── db.py                # Init connection, migrations
+│   ├── models.py             # Schema definitions
+│   └── queries.py            # CRUD functions
+├── handlers/
+│   ├── start.py               # /start, welcome message, main menu
+│   ├── video_generation.py    # Buat Video flow (conversation handler)
+│   ├── image_generation.py    # Buat Gambar flow
+│   ├── credit.py              # Top-up kredit, payment webhook
+│   ├── referral.py             # Ajak Kawan / referral system
+│   ├── history.py             # Sejarah generation
+│   ├── settings.py            # Bahasa, Maklum Balas
+│   └── admin.py                # Admin commands (broadcast, adjust credit, view stats)
+├── services/
+│   ├── fal_service.py          # Wrapper untuk fal-client: submit job, poll status, upload image
+│   ├── credit_service.py       # Kira kos, tolak/tambah baki, validate cukup kredit
+│   └── payment_service.py      # Integrate payment gateway (placeholder untuk Midtrans/ToyyibPay)
+├── models_config.py            # Definisi semua AI model: nama, fal.ai endpoint slug, harga jual, kos wholesale, jenis (T2V/I2V/T2I), durasi, resolusi
+├── requirements.txt
+├── .env.example
+└── README.md
+
+## DATABASE SCHEMA (SQLite via aiosqlite)
+
+Table `users`:
+- user_id (INTEGER PRIMARY KEY, Telegram user id)
+- username TEXT
+- balance INTEGER DEFAULT 0 (dalam sen/rupiah terkecil, elak float)
+- language TEXT DEFAULT 'ms'
+- referred_by INTEGER NULL
+- created_at TIMESTAMP
+- last_checkin TIMESTAMP NULL
+
+Table `transactions`:
+- id INTEGER PRIMARY KEY AUTOINCREMENT
+- user_id INTEGER
+- type TEXT ('topup', 'generation', 'referral_bonus', 'checkin_bonus', 'admin_adjust')
+- amount INTEGER (positive untuk masuk, negative untuk keluar)
+- balance_after INTEGER
+- reference_id TEXT NULL (payment gateway ref atau job_id)
+- created_at TIMESTAMP
+
+Table `jobs`:
+- id TEXT PRIMARY KEY (UUID)
+- user_id INTEGER
+- model_key TEXT (rujuk models_config.py)
+- job_type TEXT ('video', 'image')
+- prompt TEXT
+- input_image_url TEXT NULL
+- fal_request_id TEXT NULL
+- status TEXT ('pending', 'processing', 'completed', 'failed')
+- output_url TEXT NULL
+- cost INTEGER
+- created_at TIMESTAMP
+- completed_at TIMESTAMP NULL
+
+Table `referrals`:
+- referrer_id INTEGER
+- referred_id INTEGER
+- bonus_paid BOOLEAN DEFAULT FALSE
+
+## MODELS_CONFIG.PY — Senarai model (contoh struktur, isi dengan fal.ai endpoint sebenar dari docs.fal.ai)
+
+Setiap model kena ada:
+- key (unique id untuk internal reference)
+- display_name (dengan emoji macam "🔥 Gemini Omni Flash (10s)")
+- fal_endpoint (contoh: "fal-ai/veo3.1", "fal-ai/kling-video/v2.6/standard/image-to-video", "fal-ai/bytedance/seedance/v2/text-to-video")
+- input_type ('text_only', 'image_required', 'image_optional')
+- duration_seconds
+- resolution
+- has_audio (bool)
+- wholesale_cost_myr (kos sebenar dari fal.ai, letak placeholder dulu — kena verify betul-betul dari fal.ai pricing page sebelum production)
+- sell_price_myr (harga jual ke user, dengan margin — cadangkan minimum 40-60% markup atas wholesale sebab volatility harga provider)
+- server_group (untuk display macam "Server #2" dalam UI asal — ni cuma kategorisasi visual)
+
+## FLOW BOT (WAJIB IKUT LANGKAH NI TEPAT)
+
+### 1. /start
+Papar welcome message: nama bot, baki kredit user, statistik penggunaan (query dari table jobs), senarai model tersedia dikumpul ikut server_group. Guna ReplyKeyboardMarkup untuk main menu (Buat Video, Buat Gambar, Kredit, Ajak Kawan, Baki Saya, Sejarah, Maklum Balas, Bahasa, Check-in Mingguan, Papan Pendahulu) — susun 2 lajur macam grid.
+
+### 2. Buat Video (ConversationHandler dengan states)
+States: CHOOSE_MODEL -> AWAIT_IMAGE (skip kalau text_only) -> AWAIT_PROMPT -> CONFIRM -> PROCESSING
+
+Step-step:
+a. User tekan "Buat Video" -> papar InlineKeyboardMarkup senarai semua model video (dari models_config), setiap button papar nama + spec + harga. Ada butang "Kembali".
+b. User pilih model -> check jenis input_type:
+   - Kalau image_required/image_optional: mintak user upload gambar ("Sila hantar gambar untuk video ini")
+   - Kalau text_only: skip terus ke step c
+c. Mintak prompt text ("Terangkan video yang anda mahu")
+d. Check baki user cukup ke tak (cost dari models_config) — kalau tak cukup, bagitahu dan arah ke menu Kredit, batalkan flow
+e. Papar ringkasan (model, prompt, kos) dengan butang Confirm/Cancel
+f. Bila confirm: 
+   - Tolak kredit user SEGERA (guna transaction dengan DB lock/atomic update untuk elak race condition kalau user spam)
+   - Upload gambar ke fal.ai storage (fal_client.upload_file) kalau ada
+   - Submit job ke fal.ai (fal_client.submit_async) dengan prompt + image_url
+   - Simpan job record dalam DB dengan status 'processing'
+   - Bagitahu user "Sedang diproses..." dengan job_id
+   - Guna asyncio task berasingan untuk poll status (jangan block bot event loop) — check setiap 5-10 saat, atau guna fal_client webhook kalau server ada public URL
+g. Bila job siap: download/dapatkan output_url, hantar video terus dalam chat guna send_video, update job status 'completed'
+h. Kalau job gagal: REFUND kredit user automatik, hantar mesej error, update status 'failed'
+
+### 3. Buat Gambar
+Flow sama macam Buat Video tapi guna model image (Nano Banana, GPT Image 2) dan send_photo bukan send_video.
+
+### 4. Kredit (top-up)
+Papar pilihan pakej kredit (contoh: Rp10,000 / Rp25,000 / Rp50,000 / Rp100,000) dengan butang. Bila user pilih, generate payment link (placeholder function untuk payment gateway — buat dulu struktur untuk terima webhook confirmation yang akan credit balance user secara automatik lepas payment berjaya).
+
+### 5. Ajak Kawan (Referral)
+Generate deep link unik (https://t.me/BOTNAME?start=ref_{user_id}). Bila user baru start dengan parameter ref_XXX, simpan referred_by, dan bila user baru tu buat generation pertama (atau top-up pertama), bagi bonus kredit kat both referrer dan referred user.
+
+### 6. Baki Saya
+Papar balance semasa + 5 transaksi terakhir dari table transactions.
+
+### 7. Sejarah
+Papar list job terakhir user (model, tarikh, status) dengan pagination (inline keyboard next/prev).
+
+### 8. Check-in Mingguan
+Check last_checkin, kalau dah 7 hari, bagi bonus kredit kecil, update last_checkin timestamp.
+
+### 9. Papan Pendahulu
+Query top 10 user ikut jumlah job completed atau jumlah kredit dibelanjakan.
+
+### 10. Admin commands (guna filters.User(ADMIN_IDS))
+- /broadcast [message] — hantar kat semua user dalam DB
+- /addcredit [user_id] [amount] — manual adjust
+- /stats — jumlah user, jumlah job, revenue
+
+## KESILAPAN YANG KENA ELAK
+- JANGAN block event loop bot semasa poll status API — guna asyncio.create_task atau job queue berasingan
+- JANGAN tolak kredit user SELEPAS job siap — tolak SEBELUM submit, refund kalau gagal (elak user exploit dengan spam request semasa proses)
+- JANGAN simpan kredit sebagai float — guna integer (sen/rupiah terkecil) untuk elak floating point error
+- Guna database transaction/lock untuk balance update supaya elak race condition kalau user hantar banyak request serentak
+- Validate fail size/format gambar sebelum upload ke fal.ai (had 10MB, format jpg/png)
+- Handle rate limit dari fal.ai (429 response) dengan retry logic + backoff
+
+## SETUP & ENV
+.env perlukan: TELEGRAM_BOT_TOKEN, FAL_KEY, DATABASE_PATH, ADMIN_USER_IDS (comma separated), PAYMENT_GATEWAY_KEY
+
+Guna requirements.txt: python-telegram-bot[job-queue]>=21.0, fal-client, aiosqlite, python-dotenv
+
+Mula dengan struktur folder + database schema + models_config.py dulu, pastikan working, baru sambung ke handlers satu-satu ikut susunan: start -> video_generation -> credit -> selebihnya.
