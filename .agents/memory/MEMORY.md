@@ -1,0 +1,1 @@
+- [SQLite async cursors](sqlite-async-cursors.md) — this environment’s aiosqlite connection requires explicit cursor fetches.

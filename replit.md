@@ -1,44 +1,50 @@
-# [Project name]
+# JagoVideo Clone
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Telegram bot for credit-based AI video and image generation through fal.ai.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `uv run bot.py` — run the Telegram bot
+- `python -m compileall bot.py config.py database handlers services models_config.py` — check Python syntax
+- Required secrets: `TELEGRAM_BOT_TOKEN`, `FAL_KEY`
+- Optional: `ADMIN_USER_IDS`, `PAYMENT_GATEWAY_KEY`, `DATABASE_PATH`
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11+
+- Telegram: python-telegram-bot 21+
+- Provider: fal-client
+- Database: SQLite via aiosqlite
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `bot.py` — application setup and handler registration
+- `database/` — SQLite migrations and atomic balance ledger
+- `handlers/` — Telegram flows
+- `services/` — credits, payments, fal.ai, and generation worker
+- `models_config.py` — model catalog and pricing
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Balances are integer sen and are changed inside an immediate SQLite transaction.
+- Credit is debited before fal.ai submission and refunded on failure.
+- Provider polling is isolated in asyncio tasks so the bot event loop remains responsive.
+- Payment provider wiring is isolated until a gateway is selected and authorized.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Users can generate AI video/image jobs, manage credit, view history, earn referral
+and weekly check-in bonuses, and see a leaderboard from Telegram.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+Keep user-facing bot copy in Bahasa Melayu.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Verify fal.ai model endpoint schemas and wholesale pricing before production.
+- Add `ADMIN_USER_IDS` before using admin commands.
+- Connect a payment gateway before exposing real top-up checkout.
 
 ## Pointers
 
