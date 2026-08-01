@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import traceback
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -25,34 +26,41 @@ from bot.handlers import (
 
 
 async def _process(data: dict, token: str) -> None:
-    bot = Bot(token=token)
-    update = Update.de_json(data, bot)
+    try:
+        bot = Bot(token=token)
+        update = Update.de_json(data, bot)
 
-    if update.callback_query:
-        await handle_callback(update.callback_query, bot)
+        if update.callback_query:
+            await handle_callback(update.callback_query, bot)
 
-    elif update.message:
-        msg = update.message
-        if msg.text and msg.text.startswith("/"):
-            await handle_command(msg, bot)
-        elif msg.photo or (msg.document and msg.document.mime_type and
-                           msg.document.mime_type.startswith("image/")):
-            await handle_photo(msg, bot)
-        elif msg.text:
-            await handle_text_message(msg, bot)
+        elif update.message:
+            msg = update.message
+            if msg.text and msg.text.startswith("/"):
+                await handle_command(msg, bot)
+            elif msg.photo or (msg.document and msg.document.mime_type and
+                               msg.document.mime_type.startswith("image/")):
+                await handle_photo(msg, bot)
+            elif msg.text:
+                await handle_text_message(msg, bot)
+    except BaseException:
+        print("[ERROR] _process raised an exception:", flush=True)
+        print(traceback.format_exc(), flush=True)
+        raise
 
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        print("[DEBUG] do_POST called — webhook handler started", flush=True)
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         try:
             data = json.loads(body)
             token = os.environ["TELEGRAM_BOT_TOKEN"]
             asyncio.run(_process(data, token))
-        except Exception as exc:
+        except BaseException:
             # Always return 200 so Telegram doesn't retry infinitely.
-            print(f"[telegram-webhook] Error: {exc}", flush=True)
+            print("[ERROR] Unhandled exception in do_POST:", flush=True)
+            print(traceback.format_exc(), flush=True)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
