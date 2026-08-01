@@ -10,11 +10,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
 
-    # Reset any active conversation state so the bot doesn't get confused.
+    # ── STEP 1: Dismiss any lingering reply keyboard — MUST be first ──────────
+    # Sending ReplyKeyboardRemove() on ANY message instructs Telegram to hide
+    # the reply keyboard on the client immediately.  We delete the ghost message
+    # right after so the user never sees it.
+    try:
+        ghost = await update.message.reply_text(
+            "\u200b",  # zero-width space — renders as blank
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await ghost.delete()
+    except Exception:
+        pass  # silently ignore — keyboard removal still fired before delete
+
+    # ── STEP 2: Reset any active conversation state ───────────────────────────
     for key in ("conv_msg_id", "conv_chat_id", "job_type", "model_key",
                 "selected_ratio", "prompt", "image_path"):
         context.user_data.pop(key, None)
 
+    # ── STEP 3: Upsert user + parse referral ─────────────────────────────────
     db, *_ = get_services(context)
     referred_by = None
     if context.args and context.args[0].startswith("ref_"):
@@ -29,24 +43,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         referred_by,
     )
 
+    # ── STEP 4: Build welcome text + inline menu ──────────────────────────────
     text, markup = await build_menu_message(
         context, update.effective_user.id, update.effective_user.first_name
     )
 
-    # Dismiss any lingering ReplyKeyboard from an older version of the bot.
-    # Send a throwaway message with ReplyKeyboardRemove, then delete it immediately
-    # so the user never sees it.  After this the reply keyboard is gone for good.
-    try:
-        ghost = await update.message.reply_text(
-            "\u200b",  # zero-width space — invisible content
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        await ghost.delete()
-    except Exception:
-        pass  # ignore if the bot lacks delete permission
-
-    # Edit the previous welcome message in-place if it still exists,
-    # otherwise send a fresh one and remember its ID.
+    # ── STEP 5: Edit previous welcome message in-place, or send a new one ────
     prev_msg_id = context.user_data.get("welcome_msg_id")
     prev_chat_id = context.user_data.get("welcome_chat_id")
     if prev_msg_id and prev_chat_id:
