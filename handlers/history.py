@@ -43,7 +43,7 @@ async def history_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if offset >= 8:
         buttons.append(InlineKeyboardButton("Sebelumnya", callback_data=f"history:prev:{offset - 8}"))
     if len(jobs) == 8:
-        buttons.append(InlineKeyboardButton("Setersusnya", callback_data=f"history:next:{offset + 8}"))
+        buttons.append(InlineKeyboardButton("Seterusnya", callback_data=f"history:next:{offset + 8}"))
     await query.edit_message_text(
         _history_text(jobs),
         reply_markup=InlineKeyboardMarkup([buttons] if buttons else []),

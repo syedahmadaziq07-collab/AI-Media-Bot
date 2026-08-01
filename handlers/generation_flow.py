@@ -3,6 +3,11 @@
 State machine:
   CHOOSE_MODEL → CHOOSE_RATIO → AWAIT_INPUT → CONFIRM → (submit job)
 
+ONE bot message is used throughout the whole flow and edited in-place via
+query.edit_message_text() (for inline-button callbacks) or context.bot.edit_message_text()
+(for message-triggered handlers that receive a user photo/text).  begin() sends the
+initial message and stores its ID as conv_msg_id so all subsequent steps can edit it.
+
 AWAIT_INPUT is a single state that accepts either a PHOTO or TEXT message:
   • PHOTO  — saves image to temp file, stays in AWAIT_INPUT waiting for a prompt
   • TEXT   — validates length, saves prompt, transitions to CONFIRM
@@ -184,7 +189,7 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-# ── Helpers for cleanup ───────────────────────────────────────────────────────
+# ── Helpers for cleanup & in-place editing ───────────────────────────────────
 
 def _clear_image(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Remove any stored temp image file and clear user_data."""
@@ -195,16 +200,46 @@ def _clear_image(context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
+def _store_conv_msg(context: ContextTypes.DEFAULT_TYPE, msg) -> None:
+    """Remember the bot's conversation message so message handlers can edit it."""
+    context.user_data["conv_msg_id"] = msg.message_id
+    context.user_data["conv_chat_id"] = msg.chat_id
+
+
+async def _edit_conv_msg(
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    reply_markup=None,
+    parse_mode: str | None = None,
+) -> None:
+    """Edit the stored conversation message in-place (used by message handlers)."""
+    msg_id = context.user_data.get("conv_msg_id")
+    chat_id = context.user_data.get("conv_chat_id")
+    if not msg_id or not chat_id:
+        return
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+    except Exception:
+        pass  # message may have been deleted; silently ignore
+
+
 # ── Entry ─────────────────────────────────────────────────────────────────────
 
 async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     job_type = context.user_data["job_type"]
     if not update.message:
         return ConversationHandler.END
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         f"Pilih model untuk {'video' if job_type == 'video' else 'gambar'}:",
         reply_markup=_model_keyboard(job_type),
     )
+    _store_conv_msg(context, msg)
     return CHOOSE_MODEL
 
 
@@ -286,10 +321,13 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not update.message:
         return AWAIT_INPUT
     model = MODEL_BY_KEY[context.user_data["model_key"]]
+    back_kb = _input_back_keyboard(model.job_type)
+
     if model.input_type == "text_only":
-        await update.message.reply_text(
-            "Model ini hanya terima teks. Sila tulis prompt anda.",
-            reply_markup=_input_back_keyboard(model.job_type),
+        await _edit_conv_msg(
+            context,
+            "⚠️ Model ini hanya terima teks. Sila tulis prompt anda.",
+            reply_markup=back_kb,
         )
         return AWAIT_INPUT
 
@@ -298,17 +336,19 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return AWAIT_INPUT
     file_size = getattr(image, "file_size", 0) or 0
     if file_size > 10 * 1024 * 1024:
-        await update.message.reply_text(
-            "Fail terlalu besar. Had maksimum ialah 10MB.",
-            reply_markup=_input_back_keyboard(model.job_type),
+        await _edit_conv_msg(
+            context,
+            "⚠️ Fail terlalu besar. Had maksimum ialah 10MB. Sila hantar gambar yang lebih kecil.",
+            reply_markup=back_kb,
         )
         return AWAIT_INPUT
     if update.message.document:
         mime = update.message.document.mime_type or ""
         if mime not in ("image/jpeg", "image/png"):
-            await update.message.reply_text(
-                "Format disokong hanya JPG atau PNG.",
-                reply_markup=_input_back_keyboard(model.job_type),
+            await _edit_conv_msg(
+                context,
+                "⚠️ Format tidak disokong. Sila hantar gambar dalam format JPG atau PNG.",
+                reply_markup=back_kb,
             )
             return AWAIT_INPUT
 
@@ -321,12 +361,11 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await tg_file.download_to_drive(temp.name)
     context.user_data["image_path"] = temp.name
 
-    ratio = context.user_data.get("selected_ratio", "")
-    await update.message.reply_text(
-        "✅ Gambar diterima. Sila tulis prompt anda.\n\n"
-        f"💡 Tips: {model.prompt_tips[0]}" if model.prompt_tips else
-        "✅ Gambar diterima. Sila tulis prompt anda.",
-        reply_markup=_input_back_keyboard(model.job_type),
+    tip_line = f"\n\n💡 Tips: {model.prompt_tips[0]}" if model.prompt_tips else ""
+    await _edit_conv_msg(
+        context,
+        f"✅ Gambar diterima. Sila tulis prompt anda sekarang.{tip_line}",
+        reply_markup=back_kb,
     )
     return AWAIT_INPUT
 
@@ -337,29 +376,33 @@ async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if not update.message or not update.message.text:
         return AWAIT_INPUT
     model = MODEL_BY_KEY[context.user_data["model_key"]]
+    back_kb = _input_back_keyboard(model.job_type)
     prompt = update.message.text.strip()
     if len(prompt) < 3:
-        await update.message.reply_text(
-            "Prompt terlalu pendek. Sila terangkan dengan lebih jelas.",
-            reply_markup=_input_back_keyboard(model.job_type),
+        await _edit_conv_msg(
+            context,
+            "⚠️ Prompt terlalu pendek. Sila terangkan dengan lebih jelas.",
+            reply_markup=back_kb,
         )
         return AWAIT_INPUT
     if len(prompt) > model.max_prompt_chars:
-        await update.message.reply_text(
-            f"Prompt terlalu panjang ({len(prompt)} aksara). "
+        await _edit_conv_msg(
+            context,
+            f"⚠️ Prompt terlalu panjang ({len(prompt)} aksara). "
             f"Had maksimum untuk model ini ialah {model.max_prompt_chars} aksara.",
-            reply_markup=_input_back_keyboard(model.job_type),
+            reply_markup=back_kb,
         )
         return AWAIT_INPUT
 
     db, *_ = get_services(context)
     balance = await db.balance(update.effective_user.id)
     if balance < model.sell_price_sen:
-        await update.message.reply_text(
-            f"Baki tidak mencukupi.\n"
+        await _edit_conv_msg(
+            context,
+            f"❌ Baki tidak mencukupi.\n"
             f"Kos: {_fmt_price(model.sell_price_sen)}\n"
             f"Baki semasa: {_fmt_price(balance)}\n\n"
-            "Gunakan menu Kredit untuk top-up."
+            "Gunakan menu Kredit untuk top-up.",
         )
         _clear_image(context)
         context.user_data.clear()
@@ -368,7 +411,8 @@ async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data["prompt"] = prompt
     ratio = context.user_data.get("selected_ratio", "")
     has_image = bool(context.user_data.get("image_path"))
-    await update.message.reply_text(
+    await _edit_conv_msg(
+        context,
         _confirm_text(model, ratio, prompt, has_image),
         reply_markup=_confirm_keyboard(),
         parse_mode=ParseMode.HTML,
@@ -418,7 +462,8 @@ async def confirm_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 os.unlink(image_path)
             except OSError:
                 pass
-        for key in ("image_path", "prompt", "model_key", "selected_ratio"):
+        for key in ("image_path", "prompt", "model_key", "selected_ratio",
+                    "conv_msg_id", "conv_chat_id", "job_type"):
             context.user_data.pop(key, None)
 
     settings = context.application.bot_data["settings"]
@@ -482,12 +527,16 @@ def _delivery(context: ContextTypes.DEFAULT_TYPE, user_id: int, job_type: str):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clear_image(context)
-    context.user_data.clear()
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Permintaan dibatalkan.")
     elif update.message:
-        await update.message.reply_text("Permintaan dibatalkan.", reply_markup=main_keyboard())
+        # /cancel command — edit the stored conv message in-place, then ack
+        await _edit_conv_msg(context, "Permintaan dibatalkan.")
+        await update.message.reply_text("Dibatalkan.", reply_markup=main_keyboard())
+    for key in ("conv_msg_id", "conv_chat_id", "image_path", "prompt",
+                "model_key", "selected_ratio", "job_type"):
+        context.user_data.pop(key, None)
     return ConversationHandler.END
 
 
