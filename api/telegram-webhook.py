@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -50,6 +51,7 @@ async def _process(data: dict, token: str) -> None:
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        start_time = time.time()
         print("[DEBUG] do_POST called — webhook handler started", flush=True)
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
@@ -57,9 +59,10 @@ class handler(BaseHTTPRequestHandler):
             data = json.loads(body)
             token = os.environ["TELEGRAM_BOT_TOKEN"]
             asyncio.run(_process(data, token))
+            print(f"[DEBUG] do_POST total time: {time.time() - start_time:.2f}s", flush=True)
         except BaseException:
             # Always return 200 so Telegram doesn't retry infinitely.
-            print("[ERROR] Unhandled exception in do_POST:", flush=True)
+            print(f"[ERROR] Unhandled exception in do_POST after {time.time() - start_time:.2f}s:", flush=True)
             print(traceback.format_exc(), flush=True)
 
         self.send_response(200)

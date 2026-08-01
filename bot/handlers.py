@@ -8,8 +8,10 @@ db.queries so that each Vercel invocation starts from a clean Python process.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 import traceback
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -84,8 +86,11 @@ def _is_admin(user_id: int) -> bool:
 # ── Menu ───────────────────────────────────────────────────────────────────────
 
 async def show_main_menu(bot: Bot, chat_id: int, user_id: int, first_name: str, message_id: int | None = None) -> None:
-    user = q.get_user(user_id)
-    stats = q.user_stats(user_id)
+    # Run independent DB calls in parallel — halves the round-trip count here.
+    user, stats = await asyncio.gather(
+        asyncio.to_thread(q.get_user, user_id),
+        asyncio.to_thread(q.user_stats, user_id),
+    )
     groups: dict[str, list[str]] = {}
     for model in MODELS:
         groups.setdefault(model.server_group, []).append(model.display_name)
@@ -122,6 +127,7 @@ async def handle_start(message: Message, bot: Bot) -> None:
         return
 
     print(f"[DEBUG] /start received, user_id={user.id}", flush=True)
+    _t0 = time.time()
 
     try:
         # Parse referral arg
@@ -133,12 +139,20 @@ async def handle_start(message: Message, bot: Bot) -> None:
             except ValueError:
                 pass
 
-        q.upsert_user(user.id, user.username, user.first_name or str(user.id), referred_by)
-        q.clear_conversation_state(user.id)
+        # upsert_user now uses a single Supabase upsert (was SELECT + INSERT/UPDATE).
+        await asyncio.to_thread(
+            q.upsert_user, user.id, user.username, user.first_name or str(user.id), referred_by
+        )
 
-        print("[DEBUG] About to send welcome message", flush=True)
+        print(
+            f"[DEBUG] Total processing time before send_message: {time.time() - _t0:.2f}s",
+            flush=True,
+        )
         await show_main_menu(bot, message.chat_id, user.id, user.first_name or str(user.id))
         print("[DEBUG] Welcome message sent successfully", flush=True)
+
+        # clear_conversation_state moved after send_message — user gets reply faster.
+        await asyncio.to_thread(q.clear_conversation_state, user.id)
     except Exception as e:
         print(f"[ERROR] Exception in start handler: {e}", flush=True)
         print(traceback.format_exc(), flush=True)

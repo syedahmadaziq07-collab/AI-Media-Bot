@@ -43,37 +43,33 @@ def upsert_user(
 ) -> dict:
     sb = get_client()
     now = utc_now()
-    payload: dict[str, Any] = {
-        "user_id": user_id,
-        "username": username,
-        "first_name": first_name,
-    }
-    # upsert — only insert created_at on first insert, preserve balance etc.
-    existing = sb.table("users").select("user_id, referred_by").eq("user_id", user_id).execute()
-    if existing.data:
-        sb.table("users").update({"username": username, "first_name": first_name}).eq("user_id", user_id).execute()
-    else:
-        payload["created_at"] = now
-        payload["balance"] = 0
-        try:
-            sb.table("users").insert(payload).execute()
-        except Exception as exc:
-            _log_supabase_error(f"users.insert(user_id={user_id})", exc)
-            raise
-        # Register referral if given and referrer exists
-        if referred_by and referred_by != user_id:
-            referrer = sb.table("users").select("user_id").eq("user_id", referred_by).execute()
-            if referrer.data:
-                try:
-                    sb.table("referrals").insert({
-                        "referrer_id": referred_by,
-                        "referred_id": user_id,
-                        "created_at": now,
-                    }).execute()
-                    sb.table("users").update({"referred_by": referred_by}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-    return get_user(user_id)
+
+    # Single upsert: on INSERT the DB fills balance=0 and created_at=NOW() via
+    # column defaults, so we never pass them here. On conflict (existing user)
+    # only username and first_name are updated — balance is preserved.
+    sb.table("users").upsert(
+        {"user_id": user_id, "username": username, "first_name": first_name},
+        on_conflict="user_id",
+    ).execute()
+
+    # Fetch the current row to check referral status and build the return value.
+    user = get_user(user_id)
+
+    # Register referral only for users that don't have one yet.
+    if referred_by and referred_by != user_id and not user.get("referred_by"):
+        referrer = sb.table("users").select("user_id").eq("user_id", referred_by).execute()
+        if referrer.data:
+            try:
+                sb.table("referrals").insert({
+                    "referrer_id": referred_by,
+                    "referred_id": user_id,
+                    "created_at": now,
+                }).execute()
+                sb.table("users").update({"referred_by": referred_by}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+
+    return user
 
 
 def get_user(user_id: int) -> dict:
