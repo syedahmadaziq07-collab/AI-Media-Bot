@@ -114,7 +114,7 @@ async def handle_start(message: Message, bot: Bot) -> None:
     if not user:
         return
 
-    print(f"[DEBUG] /start received, user_id={user.id}")
+    print(f"[DEBUG] /start received, user_id={user.id}", flush=True)
 
     try:
         # Parse referral arg
@@ -129,12 +129,12 @@ async def handle_start(message: Message, bot: Bot) -> None:
         q.upsert_user(user.id, user.username, user.first_name or str(user.id), referred_by)
         q.clear_conversation_state(user.id)
 
-        print("[DEBUG] About to send welcome message")
+        print("[DEBUG] About to send welcome message", flush=True)
         await show_main_menu(bot, message.chat_id, user.id, user.first_name or str(user.id))
-        print("[DEBUG] Welcome message sent successfully")
+        print("[DEBUG] Welcome message sent successfully", flush=True)
     except Exception as e:
-        print(f"[ERROR] Exception in start handler: {e}")
-        print(traceback.format_exc())
+        print(f"[ERROR] Exception in start handler: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
         raise
 
 

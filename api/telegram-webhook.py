@@ -27,21 +27,21 @@ from bot.handlers import (
 
 async def _process(data: dict, token: str) -> None:
     try:
-        bot = Bot(token=token)
-        update = Update.de_json(data, bot)
+        async with Bot(token=token) as bot:
+            update = Update.de_json(data, bot)
 
-        if update.callback_query:
-            await handle_callback(update.callback_query, bot)
+            if update.callback_query:
+                await handle_callback(update.callback_query, bot)
 
-        elif update.message:
-            msg = update.message
-            if msg.text and msg.text.startswith("/"):
-                await handle_command(msg, bot)
-            elif msg.photo or (msg.document and msg.document.mime_type and
-                               msg.document.mime_type.startswith("image/")):
-                await handle_photo(msg, bot)
-            elif msg.text:
-                await handle_text_message(msg, bot)
+            elif update.message:
+                msg = update.message
+                if msg.text and msg.text.startswith("/"):
+                    await handle_command(msg, bot)
+                elif msg.photo or (msg.document and msg.document.mime_type and
+                                   msg.document.mime_type.startswith("image/")):
+                    await handle_photo(msg, bot)
+                elif msg.text:
+                    await handle_text_message(msg, bot)
     except BaseException:
         print("[ERROR] _process raised an exception:", flush=True)
         print(traceback.format_exc(), flush=True)

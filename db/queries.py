@@ -20,7 +20,8 @@ def _log_supabase_error(context: str, exc: Exception) -> None:
     print(
         f"[Supabase error] {context} | "
         f"message={msg!r} code={code!r} details={details!r} hint={hint!r} | "
-        f"raw={exc}"
+        f"raw={exc}",
+        flush=True,
     )
     logger.error(
         "Supabase error in %s: message=%r code=%r details=%r hint=%r",
