@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from telegram import Update
+from telegram import ReplyKeyboardRemove, Update
 from telegram.ext import ContextTypes
 
 from .common import build_menu_message, get_services
@@ -32,6 +32,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text, markup = await build_menu_message(
         context, update.effective_user.id, update.effective_user.first_name
     )
+
+    # Dismiss any lingering ReplyKeyboard from an older version of the bot.
+    # Send a throwaway message with ReplyKeyboardRemove, then delete it immediately
+    # so the user never sees it.  After this the reply keyboard is gone for good.
+    try:
+        ghost = await update.message.reply_text(
+            "\u200b",  # zero-width space — invisible content
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await ghost.delete()
+    except Exception:
+        pass  # ignore if the bot lacks delete permission
 
     # Edit the previous welcome message in-place if it still exists,
     # otherwise send a fresh one and remember its ID.
