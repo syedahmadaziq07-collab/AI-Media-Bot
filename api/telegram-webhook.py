@@ -32,6 +32,7 @@ async def _process(data: dict, token: str) -> None:
             update = Update.de_json(data, bot)
 
             if update.callback_query:
+                print(f"[DEBUG] Callback query received: data={update.callback_query.data!r}", flush=True)
                 await handle_callback(update.callback_query, bot)
 
             elif update.message:

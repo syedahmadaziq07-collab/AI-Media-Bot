@@ -162,6 +162,7 @@ async def handle_start(message: Message, bot: Bot) -> None:
 # ── Callback query router ──────────────────────────────────────────────────────
 
 async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
+    print("[DEBUG] Calling answer_callback_query", flush=True)
     await query.answer()
     data = query.data or ""
     user = query.from_user
@@ -179,6 +180,7 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
 
     first_name = user.first_name or str(user.id)
 
+    print(f"[DEBUG] Sending response for callback: data={data!r}", flush=True)
     # ── Menu navigation ────────────────────────────────────────────────────────
     if data in ("menu:back", "menu:start"):
         q.clear_conversation_state(user.id)
