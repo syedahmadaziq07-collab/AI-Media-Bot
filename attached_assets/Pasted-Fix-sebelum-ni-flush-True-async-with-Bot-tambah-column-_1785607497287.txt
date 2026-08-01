@@ -1,0 +1,26 @@
+Fix sebelum ni (flush=True + async with Bot + tambah column first_name di Supabase) BERJAYA selesaikan error "first_name column not found" — tiada lagi error tu dalam log. TAPI bot MASIH TIDAK REPLY di Telegram, walaupun webhook menerima request dan return 200 OK.
+
+Log terbaru cuma tunjuk baris ringkas seperti:
+"127.0.0.1 - - [01/Aug/2026 18:03:01] POST /api/telegram-webhook HTTP/1.1 200 -"
+
+Tiada baris [DEBUG] atau [ERROR] yang jelas menunjukkan proses sampai ke mana. Saya nak audit PENUH kali ni, fokus pada bahagian SELEPAS Bot berjaya di-initialize (async with Bot(...) as bot:), sampai ke proses hantar reply.
+
+Buat langkah ni:
+
+1. Tunjukkan kandungan PENUH terkini api/telegram-webhook.py dan bahagian handle_start dalam bot/handlers.py SELEPAS fix terakhir tadi (bukan versi lama) — saya nak pastikan fix yang awak buat memang betul-betul masuk dalam fail, bukan sekadar dilaporkan siap.
+
+2. Semak dan jelaskan SATU PERSATU:
+   a. Selepas "async with Bot(token=token) as bot:", adakah kod betul-betul memanggil sesuatu function untuk proses update (contoh: application.process_update(update) atau memanggil handler secara terus)? Ataupun adakah "bot" object sahaja dicipta tapi tiada mekanisme sebenar untuk route update ke handler yang betul (contoh: tiada dispatcher/ConversationHandler yang register command /start)?
+   c. Adakah update.message.text betul-betul di-check untuk match command "/start" sebelum memanggil handle_start? Tunjukkan baris kod logic routing/dispatch ni.
+   d. Adakah bot.send_message() dipanggil dengan chat_id yang betul (dari update.effective_chat.id atau update.message.chat.id)?
+   e. Adakah ada kemungkinan function ni execute LEBIH LAMA daripada Vercel punya function timeout (default biasanya 10 saat untuk Hobby plan), menyebabkan process dibunuh SEBELUM sempat hantar reply, walaupun return status code awal sudah 200?
+
+3. Tambah SATU print(..., flush=True) TAMBAHAN sejurus SEBELUM baris await bot.send_message(...) yang mencetak: print(f"[DEBUG] Calling send_message to chat_id={chat_id} with text length={len(text)}", flush=True)
+
+4. Tambah SATU print(..., flush=True) SEJURUS SELEPAS bot.send_message() berjaya return, mencetak: print("[DEBUG] send_message returned successfully", flush=True)
+
+5. Bungkus baris bot.send_message() dengan try/except khusus (bukan setakat except besar di paras luar), dan dalam except tu, print FULL exception details termasuk jenis exception (type(e).__name__) dan mesej penuh, dengan flush=True.
+
+JANGAN buat fix dulu — tunjukkan dulu kandungan kod dan jawapan audit dari soalan 2 di atas, supaya saya boleh nampak punca sebenar sebelum sebarang perubahan dibuat.
+
+Commit dan push HANYA untuk print statement tambahan (langkah 3-5), bukan untuk perubahan logic lain.
