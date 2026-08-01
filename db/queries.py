@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .supabase_client import get_client
+
+logger = logging.getLogger(__name__)
+
+
+def _log_supabase_error(context: str, exc: Exception) -> None:
+    """Print full Supabase/PostgREST error details to stdout for Vercel Logs."""
+    msg = getattr(exc, "message", None)
+    code = getattr(exc, "code", None)
+    details = getattr(exc, "details", None)
+    hint = getattr(exc, "hint", None)
+    print(
+        f"[Supabase error] {context} | "
+        f"message={msg!r} code={code!r} details={details!r} hint={hint!r} | "
+        f"raw={exc}"
+    )
+    logger.error(
+        "Supabase error in %s: message=%r code=%r details=%r hint=%r",
+        context, msg, code, details, hint,
+    )
 
 
 def utc_now() -> str:
@@ -34,7 +54,11 @@ def upsert_user(
     else:
         payload["created_at"] = now
         payload["balance"] = 0
-        sb.table("users").insert(payload).execute()
+        try:
+            sb.table("users").insert(payload).execute()
+        except Exception as exc:
+            _log_supabase_error(f"users.insert(user_id={user_id})", exc)
+            raise
         # Register referral if given and referrer exists
         if referred_by and referred_by != user_id:
             referrer = sb.table("users").select("user_id").eq("user_id", referred_by).execute()
