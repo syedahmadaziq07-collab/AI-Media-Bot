@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import traceback
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -113,19 +114,28 @@ async def handle_start(message: Message, bot: Bot) -> None:
     if not user:
         return
 
-    # Parse referral arg
-    referred_by: int | None = None
-    args = (message.text or "").split()
-    if len(args) > 1 and args[1].startswith("ref_"):
-        try:
-            referred_by = int(args[1][4:])
-        except ValueError:
-            pass
+    print(f"[DEBUG] /start received, user_id={user.id}")
 
-    q.upsert_user(user.id, user.username, user.first_name or str(user.id), referred_by)
-    q.clear_conversation_state(user.id)
+    try:
+        # Parse referral arg
+        referred_by: int | None = None
+        args = (message.text or "").split()
+        if len(args) > 1 and args[1].startswith("ref_"):
+            try:
+                referred_by = int(args[1][4:])
+            except ValueError:
+                pass
 
-    await show_main_menu(bot, message.chat_id, user.id, user.first_name or str(user.id))
+        q.upsert_user(user.id, user.username, user.first_name or str(user.id), referred_by)
+        q.clear_conversation_state(user.id)
+
+        print("[DEBUG] About to send welcome message")
+        await show_main_menu(bot, message.chat_id, user.id, user.first_name or str(user.id))
+        print("[DEBUG] Welcome message sent successfully")
+    except Exception as e:
+        print(f"[ERROR] Exception in start handler: {e}")
+        print(traceback.format_exc())
+        raise
 
 
 # ── Callback query router ──────────────────────────────────────────────────────
