@@ -1,0 +1,47 @@
+## STATE SELEPAS PILIH RATIO — WAJIB IKUT LOGIC NI TEPAT (bukan urutan tetap)
+
+Selepas user tekan salah satu butang ratio:
+- Simpan context.user_data['selected_ratio']
+- Papar SATU mesej sahaja (bukan dua state berasingan):
+  "{emoji model} {display_name} ({duration}s) ({selected_ratio})
+  _{description ringkas} · {duration}s · {resolution} · audio {tersedia/tiada}_
+  
+  📷 Anda juga boleh hantar gambar rujukan dulu (pilihan), kemudian tulis prompt anda."
+  
+  Dengan satu butang sahaja: "◀️ Kembali" (balik ke pilih ratio)
+
+- Set SATU state sahaja: AWAIT_INPUT — state ni kena terima DUA jenis MessageHandler serentak (filters.PHOTO ATAU filters.TEXT), bukan dua state berasingan AWAIT_IMAGE dan AWAIT_PROMPT macam saya cadangkan awal tadi.
+
+### Logic dalam AWAIT_INPUT handler:
+
+IF user hantar GAMBAR (filters.PHOTO):
+    - Simpan file_id/upload ke fal storage dalam context.user_data['image_url']
+    - Papar mesej ringkas: "✅ Gambar diterima. Sila tulis prompt anda." (atau terus reuse tips prompt dari model config)
+    - KEKAL dalam state AWAIT_INPUT (bukan pindah state) — sekarang tunggu prompt WAJIB (gambar sahaja tak cukup untuk proceed)
+    - Kalau user hantar gambar LAGI sebelum bagi prompt, ganti image_url sebelumnya (guna gambar terbaru sahaja)
+
+IF user hantar TEKS:
+    - Validate panjang teks tak lebih dari max_prompt_chars model tu — kalau lebih, papar amaran, minta hantar semula, KEKAL dalam state ni
+    - Simpan context.user_data['prompt'] = teks tu
+    - Terus proceed ke CONFIRM state (tak kira ada image_url ke tidak — sebab gambar memang optional, prompt yang wajib)
+
+### CONFIRM state — papar mesej format ni:
+
+"📋 Sedia generate?
+
+{emoji} {display_name}
+🕐 {duration}s   🖥️ {resolution}   📐 {selected_ratio}
+
+📝 "{prompt}"
+
+💰 Ini akan guna Rp {harga_rp} (RM {harga_rm})."
+
+Butang (InlineKeyboardMarkup, 3 baris):
+✅ Generate
+✏️ Ubah
+❌ Batal
+
+### Handler butang di CONFIRM:
+- "✅ Generate" → proceed ke proses tolak kredit + submit job ke fal.ai (macam described dalam flow asal)
+- "✏️ Ubah" → balik ke state AWAIT_INPUT, biar user hantar semula gambar/prompt baru (kekalkan model + ratio yang dah dipilih, jangan reset ke awal)
+- "❌ Batal" → cancel ConversationHandler sepenuhnya, balik ke main menu, tiada kredit ditolak
