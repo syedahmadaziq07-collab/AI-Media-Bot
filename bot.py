@@ -7,9 +7,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
-    MessageHandler,
     ContextTypes,
-    filters,
 )
 
 from config import Settings, load_settings
@@ -22,7 +20,7 @@ from handlers.history import history_page, show_history
 from handlers.image_generation import image_conversation
 from handlers.referral import show_referral
 from handlers.settings import feedback, language, leaderboard, weekly_checkin
-from handlers.start import start
+from handlers.start import back_to_menu, start
 from handlers.video_generation import video_conversation
 from services.credit_service import CreditService
 from services.fal_service import FalService
@@ -67,21 +65,32 @@ def build_application(settings: Settings) -> Application:
         payment=PaymentService(db, settings.payment_gateway_key),
     )
 
+    # ── Commands ──────────────────────────────────────────────────────────────
     application.add_handler(CommandHandler("start", start))
+
+    # ── Generation conversations (entry via menu:video / menu:image callbacks) ─
     application.add_handler(video_conversation)
     application.add_handler(image_conversation)
-    application.add_handler(MessageHandler(filters.Regex("^Kredit$"), show_credit))
+
+    # ── Main-menu navigation ──────────────────────────────────────────────────
+    application.add_handler(CallbackQueryHandler(back_to_menu,    pattern=r"^menu:back$"))
+    application.add_handler(CallbackQueryHandler(show_credit,     pattern=r"^menu:credit$"))
+    application.add_handler(CallbackQueryHandler(show_balance,    pattern=r"^menu:balance$"))
+    application.add_handler(CallbackQueryHandler(show_referral,   pattern=r"^menu:referral$"))
+    application.add_handler(CallbackQueryHandler(show_history,    pattern=r"^menu:history$"))
+    application.add_handler(CallbackQueryHandler(feedback,        pattern=r"^menu:feedback$"))
+    application.add_handler(CallbackQueryHandler(language,        pattern=r"^menu:language$"))
+    application.add_handler(CallbackQueryHandler(weekly_checkin,  pattern=r"^menu:checkin$"))
+    application.add_handler(CallbackQueryHandler(leaderboard,     pattern=r"^menu:leaderboard$"))
+
+    # ── Sub-flow callbacks ────────────────────────────────────────────────────
     application.add_handler(CallbackQueryHandler(choose_credit, pattern=r"^credit:"))
-    application.add_handler(MessageHandler(filters.Regex("^Baki Saya$"), show_balance))
-    application.add_handler(MessageHandler(filters.Regex("^Ajak Kawan$"), show_referral))
-    application.add_handler(MessageHandler(filters.Regex("^Sejarah$"), show_history))
-    application.add_handler(CallbackQueryHandler(history_page, pattern=r"^history:"))
-    application.add_handler(MessageHandler(filters.Regex("^Maklum Balas$"), feedback))
-    application.add_handler(MessageHandler(filters.Regex("^Bahasa$"), language))
-    application.add_handler(MessageHandler(filters.Regex("^Check-in Mingguan$"), weekly_checkin))
-    application.add_handler(MessageHandler(filters.Regex("^Papan Pendahulu$"), leaderboard))
+    application.add_handler(CallbackQueryHandler(history_page,  pattern=r"^history:"))
+
+    # ── Admin commands ────────────────────────────────────────────────────────
     for handler in admin_handlers():
         application.add_handler(handler)
+
     return application
 
 

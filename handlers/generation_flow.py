@@ -38,7 +38,7 @@ from telegram.ext import (
 )
 
 from models_config import AIModel, MODEL_BY_KEY, models_for
-from .common import get_services, main_keyboard
+from .common import back_to_menu_button, build_menu_message, get_services, main_menu_markup
 
 # ── Conversation states ──────────────────────────────────────────────────────
 CHOOSE_MODEL, CHOOSE_RATIO, AWAIT_INPUT, CONFIRM = range(4)
@@ -233,13 +233,16 @@ async def _edit_conv_msg(
 
 async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     job_type = context.user_data["job_type"]
-    if not update.message:
+    text = f"Pilih model untuk {'video' if job_type == 'video' else 'gambar'}:"
+    markup = _model_keyboard(job_type)
+    if update.callback_query:
+        msg = await update.callback_query.edit_message_text(text, reply_markup=markup)
+        _store_conv_msg(context, msg)
+    elif update.message:
+        msg = await update.message.reply_text(text, reply_markup=markup)
+        _store_conv_msg(context, msg)
+    else:
         return ConversationHandler.END
-    msg = await update.message.reply_text(
-        f"Pilih model untuk {'video' if job_type == 'video' else 'gambar'}:",
-        reply_markup=_model_keyboard(job_type),
-    )
-    _store_conv_msg(context, msg)
     return CHOOSE_MODEL
 
 
@@ -403,6 +406,7 @@ async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             f"Kos: {_fmt_price(model.sell_price_sen)}\n"
             f"Baki semasa: {_fmt_price(balance)}\n\n"
             "Gunakan menu Kredit untuk top-up.",
+            reply_markup=back_to_menu_button(),
         )
         _clear_image(context)
         context.user_data.clear()
@@ -527,13 +531,24 @@ def _delivery(context: ContextTypes.DEFAULT_TYPE, user_id: int, job_type: str):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clear_image(context)
+    effective_user = update.effective_user
+    if effective_user:
+        try:
+            text, markup = await build_menu_message(
+                context, effective_user.id, effective_user.first_name
+            )
+        except Exception:
+            text = "Permintaan dibatalkan. Guna /start untuk kembali ke menu."
+            markup = main_menu_markup()
+    else:
+        text = "Permintaan dibatalkan."
+        markup = None
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Permintaan dibatalkan.")
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
     elif update.message:
-        # /cancel command — edit the stored conv message in-place, then ack
-        await _edit_conv_msg(context, "Permintaan dibatalkan.")
-        await update.message.reply_text("Dibatalkan.", reply_markup=main_keyboard())
+        # /cancel command — edit the stored conv message back to main menu
+        await _edit_conv_msg(context, text, reply_markup=markup)
     for key in ("conv_msg_id", "conv_chat_id", "image_path", "prompt",
                 "model_key", "selected_ratio", "job_type"):
         context.user_data.pop(key, None)
@@ -547,10 +562,7 @@ def build_generation_conversation(job_type: str) -> ConversationHandler:
 
     return ConversationHandler(
         entry_points=[
-            MessageHandler(
-                filters.Regex(f"^Buat {'Video' if jt == 'video' else 'Gambar'}$"),
-                _entry(jt),
-            ),
+            CallbackQueryHandler(_entry(jt), pattern=fr"^menu:{jt}$"),
         ],
         states={
             CHOOSE_MODEL: [
@@ -581,6 +593,8 @@ def build_generation_conversation(job_type: str) -> ConversationHandler:
 
 def _entry(job_type: str):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        if update.callback_query:
+            await update.callback_query.answer()
         context.user_data["job_type"] = job_type
         return await begin(update, context)
 
