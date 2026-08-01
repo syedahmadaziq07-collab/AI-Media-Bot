@@ -1,0 +1,85 @@
+Projek ni akan di-deploy ke VERCEL (serverless, Python runtime) — BUKAN Replit hosting, BUKAN Node.js. Deploy sebelum ni gagal sebab repo bercampur setup Node.js (pnpm-lock.yaml) yang buat Vercel keliru dan cuba jalankan pip install dalam environment yang locked ("externally-managed-environment").
+
+Buat langkah ni untuk betulkan struktur repo sepenuhnya untuk Vercel:
+
+## 1. PADAM fail Node.js yang tidak diperlukan (jika wujud di root repo)
+- pnpm-lock.yaml
+- package.json
+- package-lock.json
+- yarn.lock
+- node_modules/ (folder)
+
+## 2. PASTIKAN struktur fail ni WUJUD di root repo, betul-betul macam berikut:
+
+jagovideo-bot/
+├── api/
+│   ├── telegram-webhook.py     # Terima update Telegram, proses, reply
+│   ├── fal-webhook.py           # Terima callback dari fal.ai bila job siap
+│   └── health.py                 # Endpoint GET simple, return {"status":"ok"} untuk uptime ping
+├── bot/
+│   ├── handlers.py               # Semua logic command/flow conversation
+│   ├── keyboards.py              # Builder InlineKeyboardMarkup (main menu, pilih model, ratio, confirm)
+│   └── states.py                  # Definisi ConversationHandler states
+├── db/
+│   ├── supabase_client.py        # Init Supabase client (guna SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)
+│   └── queries.py                 # Semua fungsi query/RPC ke Supabase (models, users, jobs, credit_packages, topup_requests)
+├── services/
+│   ├── fal_service.py             # Wrapper submit job ke fal.ai dengan webhook_url parameter
+│   └── credit_service.py          # Panggil RPC deduct_credit / add_credit dari Supabase
+├── requirements.txt                # WAJIB di root, bukan dalam subfolder
+├── vercel.json                     # Config runtime Python untuk semua fail dalam api/
+├── setup_webhook.py                # Script dijalankan MANUAL sekali lepas deploy, bukan dipanggil automatik
+├── .env.example                    # Senarai nama env var diperlukan (tanpa value sebenar)
+└── README.md                       # Ringkasan cara deploy dan set env vars
+
+## 3. KANDUNGAN vercel.json WAJIB macam ni:
+{
+  "functions": {
+    "api/*.py": {
+      "runtime": "@vercel/python"
+    }
+  }
+}
+
+## 4. KANDUNGAN requirements.txt WAJIB include (tambah versi jika perlu):
+python-telegram-bot
+fal-client
+supabase
+python-dotenv
+
+## 5. api/health.py WAJIB kandungan ni (untuk uptime monitor, bukan untuk elak "tidur" — Vercel serverless tak perlukan ni, tapi bagus untuk kurangkan cold start):
+from http.server import BaseHTTPRequestHandler
+import json
+
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "ok"}).encode())
+
+## 6. setup_webhook.py WAJIB berasingan dari api/ folder (skrip ni saya run manual dari local terminal, BUKAN function serverless):
+import requests
+import os
+
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+VERCEL_URL = os.environ.get("VERCEL_DOMAIN")  # contoh: https://namabot.vercel.app
+
+response = requests.post(
+    f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+    json={"url": f"{VERCEL_URL}/api/telegram-webhook"}
+)
+print(response.json())
+
+## 7. .env.example WAJIB senaraikan (tanpa value):
+TELEGRAM_BOT_TOKEN=
+FAL_KEY=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+ADMIN_CHAT_ID=
+VERCEL_DOMAIN=
+
+## 8. PENTING — api/telegram-webhook.py kena handle stateless serverless dengan betul:
+Setiap panggilan function adalah invocation berasingan (tiada shared memory antara request). Application (dari python-telegram-bot) kena di-initialize RINGAN setiap kali function dipanggil — JANGAN simpan state ConversationHandler dalam memory Python global, semua state (model dipilih, ratio, prompt sementara) WAJIB disimpan dalam Supabase (contoh table sementara `conversation_state` dengan user_id sebagai key) atau dalam context yang di-pass balik melalui Telegram callback_data, BUKAN dalam variable Python yang akan hilang bila function tamat.
+
+Selepas siap semua langkah di atas, commit dan push ke GitHub branch main. Kemudian senaraikan struktur folder root repo untuk saya sahkan tiada lagi fail Node.js yang tinggal dan semua fail di atas wujud betul-betul di tempatnya.
