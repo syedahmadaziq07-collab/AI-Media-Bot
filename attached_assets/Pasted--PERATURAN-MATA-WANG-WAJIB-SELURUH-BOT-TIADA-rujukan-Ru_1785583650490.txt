@@ -1,0 +1,79 @@
+## PERATURAN MATA WANG — WAJIB SELURUH BOT
+
+TIADA rujukan Rupiah (Rp/IDR) di mana-mana bahagian bot — dalam mesej, table pricing, model info card, package kredit, confirmation screen, history, admin panel — SEMUA guna RM (Ringgit Malaysia) sahaja. Table `models` dan `credit_packages` dalam Supabase HANYA simpan satu column harga (price_rm), bukan dual currency.
+
+## FLOW KREDIT — MANUAL APPROVAL (BUKAN AUTOMATED PAYMENT GATEWAY)
+
+Ni bukan integrasi payment gateway automatik (macam Midtrans/ToyyibPay check status API) — ni flow manual: customer bayar sendiri via QR (bank/e-wallet), hantar resit sebagai bukti, admin approve/reject manual dalam Telegram.
+
+### 1. Table Supabase tambahan:
+
+`credit_packages`:
+- id, name (contoh "Starter", "Bajet", "Pro", "Ultra")
+- price_rm (harga jual dalam RM)
+- bonus_percent (contoh 0, 2, 6, 8)
+- description TEXT NULL
+- is_active BOOLEAN DEFAULT TRUE
+- sort_order INTEGER
+
+`payment_settings` (single row, admin update via dashboard):
+- qr_image_url (link gambar QR dari Supabase Storage, admin upload melalui dashboard)
+- payment_instructions TEXT (contoh "Imbas kod QR di bawah untuk bayar")
+- payment_expiry_minutes INTEGER DEFAULT 30
+
+`topup_requests`:
+- id (UUID)
+- user_id
+- package_id
+- amount_rm
+- receipt_file_id TEXT NULL (Telegram file_id gambar resit yang user hantar)
+- status TEXT ('awaiting_receipt', 'pending_review', 'approved', 'rejected')
+- admin_id INTEGER NULL (admin yang proses)
+- admin_note TEXT NULL (reason kalau reject)
+- created_at, expires_at, processed_at
+
+### 2. Flow bot:
+
+a. User tekan "Kredit" -> query credit_packages (is_active=true, order by sort_order) dari Supabase -> papar InlineKeyboardMarkup: satu butang setiap pakej, label "{name} — RM{price_rm}" + " (+{bonus_percent}% bonus)" kalau ada bonus. Butang "◀️ Kembali" di bawah.
+
+b. User pilih pakej -> create record topup_requests (status='awaiting_receipt', expires_at = now + payment_expiry_minutes) -> query qr_image_url dari payment_settings -> hantar gambar QR (send_photo) dengan caption:
+   "{instructions dari payment_settings}
+   
+   📦 {package_name} — RM{price_rm}
+   ⏰ Tamat: {expires_at formatted}"
+   
+   Dengan InlineKeyboardMarkup: 
+   "📤 Hantar Resit Pembayaran" (bukan "Semak Pembayaran" — sebab tiada automated check)
+   "❌ Batalkan"
+   "◀️ Kembali"
+
+c. User tekan "Hantar Resit Pembayaran" -> set state AWAIT_RECEIPT -> papar "Sila hantar screenshot/gambar resit pembayaran anda."
+
+d. User hantar gambar -> validate mesej tu memang photo -> simpan file_id ke topup_requests.receipt_file_id, update status='pending_review' -> papar kat user: "✅ Resit diterima. Permintaan anda sedang disemak oleh admin. Anda akan dimaklumkan sebaik sahaja disahkan."
+
+e. Bot FORWARD/hantar mesej ke admin (guna ADMIN_CHAT_ID dari env var atau admin_settings table — boleh chat admin individu atau group admin):
+   - Forward gambar resit
+   - Caption: "🔔 Permintaan Top-up Baru
+     👤 User: {username} (ID: {user_id})
+     📦 Pakej: {package_name} — RM{price_rm}
+     🕐 {created_at}"
+   - InlineKeyboardMarkup: "✅ Approve" / "❌ Reject" (callback_data sertakan topup_request_id)
+
+f. Admin tekan "✅ Approve":
+   - Update topup_requests.status='approved', admin_id, processed_at
+   - Tambah balance user dalam table users (price_rm + bonus kalau ada, convert ke unit kredit sen yang consistent dengan sistem kredit sedia ada) — guna Supabase RPC atomic function macam described sebelum ni untuk elak race condition
+   - Insert transaction record type='topup'
+   - Notify user: "✅ Top-up berjaya! RM{amount} telah ditambah. Baki baru: RM{new_balance}"
+   - Edit mesej admin tu (edit_message_reply_markup) buang butang, tunjuk "✅ Diluluskan oleh {admin_name}"
+
+g. Admin tekan "❌ Reject":
+   - Bagi admin minta reason dulu (optional: reply mesej tu dengan alasan, atau terus reject tanpa alasan)
+   - Update status='rejected', admin_id, admin_note
+   - Notify user: "❌ Pembayaran tidak dapat disahkan. Sila hubungi admin/cuba semula." (+ alasan kalau admin bagi)
+   - Edit mesej admin, tunjuk "❌ Ditolak oleh {admin_name}"
+
+### 3. Auto-expire (optional tapi digalakkan)
+Kalau topup_requests.status masih 'awaiting_receipt' atau 'pending_review' lepas expires_at, tandakan 'expired' automatik (guna Supabase scheduled function/cron atau check semasa user cuba akses semula) supaya admin tak nampak request lapuk.
+
+### 4. QR image — jangan hardcode
+QR code image BUKAN generate oleh bot — ianya gambar statik (QR bank/e-wallet sebenar) yang admin upload sendiri via dashboard web (Supabase Storage). Bot hanya fetch qr_image_url terkini dari table payment_settings setiap kali papar skrin pembayaran. Jangan bina logic QR generation dalam bot — placeholder sahaja buat masa ni, dashboard belum dibina.

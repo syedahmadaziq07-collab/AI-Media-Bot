@@ -58,6 +58,8 @@ class Database:
 
     async def _migrate(self) -> None:
         db = self._db()
+        # executescript issues an implicit COMMIT before running, so it is safe
+        # to use for DDL that must all succeed together.
         await db.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -102,9 +104,65 @@ class Database:
                 FOREIGN KEY (referrer_id) REFERENCES users(user_id),
                 FOREIGN KEY (referred_id) REFERENCES users(user_id)
             );
+            CREATE TABLE IF NOT EXISTS credit_packages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                price_rm REAL NOT NULL,
+                bonus_percent INTEGER NOT NULL DEFAULT 0,
+                description TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS payment_settings (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                qr_image_url TEXT,
+                payment_instructions TEXT NOT NULL
+                    DEFAULT 'Imbas kod QR di bawah dan bayar jumlah yang ditetapkan.',
+                payment_expiry_minutes INTEGER NOT NULL DEFAULT 30
+            );
+            CREATE TABLE IF NOT EXISTS topup_requests (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                package_id INTEGER NOT NULL,
+                amount_rm REAL NOT NULL,
+                bonus_percent INTEGER NOT NULL DEFAULT 0,
+                receipt_file_id TEXT,
+                status TEXT NOT NULL DEFAULT 'awaiting_receipt',
+                admin_id INTEGER,
+                admin_note TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                processed_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (package_id) REFERENCES credit_packages(id)
+            );
+            """
+        )
+        # Seed default credit packages (INSERT OR IGNORE — safe on existing DBs)
+        await db.executemany(
+            """
+            INSERT OR IGNORE INTO credit_packages
+                (id, name, price_rm, bonus_percent, description, is_active, sort_order)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            [
+                (1, "Starter", 10.0,  0, None, 1),
+                (2, "Bajet",   20.0,  2, None, 2),
+                (3, "Pro",     50.0,  6, None, 3),
+                (4, "Ultra",  100.0,  8, None, 4),
+            ],
+        )
+        # Seed single payment_settings row
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO payment_settings
+                (id, qr_image_url, payment_instructions, payment_expiry_minutes)
+            VALUES (1, NULL, 'Imbas kod QR di bawah dan bayar jumlah yang ditetapkan.', 30)
             """
         )
         await db.commit()
+
+    # ── Users ─────────────────────────────────────────────────────────────────
 
     async def upsert_user(
         self, user_id: int, username: str | None, referred_by: int | None = None
@@ -179,6 +237,8 @@ class Database:
             except Exception:
                 await db.rollback()
                 raise
+
+    # ── Jobs ──────────────────────────────────────────────────────────────────
 
     async def create_job(
         self,
@@ -317,3 +377,116 @@ class Database:
         )
         await db.commit()
         return True
+
+    # ── Credit packages ───────────────────────────────────────────────────────
+
+    async def get_credit_packages(self) -> list[dict[str, Any]]:
+        rows = await self._fetchall(
+            "SELECT * FROM credit_packages WHERE is_active = 1 ORDER BY sort_order, id"
+        )
+        return [dict(row) for row in rows]
+
+    async def get_credit_package(self, pkg_id: int) -> dict[str, Any]:
+        row = await self._fetchone(
+            "SELECT * FROM credit_packages WHERE id = ? AND is_active = 1", (pkg_id,)
+        )
+        if row is None:
+            raise KeyError(f"Credit package {pkg_id} not found.")
+        return dict(row)
+
+    # ── Payment settings ──────────────────────────────────────────────────────
+
+    async def get_payment_settings(self) -> dict[str, Any] | None:
+        row = await self._fetchone("SELECT * FROM payment_settings WHERE id = 1")
+        return dict(row) if row else None
+
+    # ── Topup requests ────────────────────────────────────────────────────────
+
+    async def create_topup_request(
+        self,
+        request_id: str,
+        user_id: int,
+        package_id: int,
+        amount_rm: float,
+        bonus_percent: int,
+        created_at: str,
+        expires_at: str,
+    ) -> None:
+        await self._db().execute(
+            """
+            INSERT INTO topup_requests
+                (id, user_id, package_id, amount_rm, bonus_percent,
+                 status, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, 'awaiting_receipt', ?, ?)
+            """,
+            (request_id, user_id, package_id, amount_rm, bonus_percent,
+             created_at, expires_at),
+        )
+        await self._db().commit()
+
+    async def get_topup_request(self, request_id: str) -> dict[str, Any]:
+        row = await self._fetchone(
+            "SELECT * FROM topup_requests WHERE id = ?", (request_id,)
+        )
+        if row is None:
+            raise KeyError(f"Topup request {request_id} not found.")
+        return dict(row)
+
+    async def update_topup_request(self, request_id: str, **fields: Any) -> None:
+        allowed = {
+            "receipt_file_id", "status", "admin_id",
+            "admin_note", "processed_at",
+        }
+        if not fields or not set(fields).issubset(allowed):
+            raise ValueError(f"Invalid topup_request update fields: {set(fields) - allowed}")
+        assignments = ", ".join(f"{k} = ?" for k in fields)
+        await self._db().execute(
+            f"UPDATE topup_requests SET {assignments} WHERE id = ?",
+            (*fields.values(), request_id),
+        )
+        await self._db().commit()
+
+    async def approve_topup(
+        self, request_id: str, admin_id: int
+    ) -> tuple[int, int, float, int, str]:
+        """Atomically approve a topup: credit user balance, mark approved.
+
+        Returns (user_id, new_balance_sen, amount_rm, bonus_percent, pkg_name).
+        """
+        req = await self.get_topup_request(request_id)
+        if req["status"] != "pending_review":
+            raise ValueError(f"Cannot approve request with status '{req['status']}'")
+        pkg = await self.get_credit_package(req["package_id"])
+        # Convert RM to sen and apply bonus
+        credit_sen = int(req["amount_rm"] * 100 * (1 + req["bonus_percent"] / 100))
+        new_balance = await self.mutate_balance(
+            req["user_id"], credit_sen, "topup", request_id
+        )
+        await self.update_topup_request(
+            request_id,
+            status="approved",
+            admin_id=admin_id,
+            processed_at=utc_now(),
+        )
+        return req["user_id"], new_balance, req["amount_rm"], req["bonus_percent"], pkg["name"]
+
+    async def reject_topup(
+        self, request_id: str, admin_id: int, note: str | None = None
+    ) -> tuple[int, str]:
+        """Mark a topup request as rejected.
+
+        Returns (user_id, pkg_name).
+        """
+        req = await self.get_topup_request(request_id)
+        if req["status"] not in ("pending_review", "awaiting_receipt"):
+            raise ValueError(f"Cannot reject request with status '{req['status']}'")
+        pkg = await self.get_credit_package(req["package_id"])
+        updates: dict[str, Any] = {
+            "status": "rejected",
+            "admin_id": admin_id,
+            "processed_at": utc_now(),
+        }
+        if note:
+            updates["admin_note"] = note
+        await self.update_topup_request(request_id, **updates)
+        return req["user_id"], pkg["name"]

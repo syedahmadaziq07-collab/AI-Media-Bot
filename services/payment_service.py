@@ -1,45 +1,17 @@
-"""Payment abstraction.
+"""Payment service placeholder.
 
-The gateway-specific implementation is intentionally isolated. Replace the
-placeholder URL with a signed checkout session once a gateway is connected.
+The full manual top-up flow (package selection, QR display, receipt upload,
+admin approval) is implemented in handlers/topup.py and handlers/credit.py,
+backed directly by the database layer (database/db.py topup_* methods).
+
+This file is retained as a thin stub so existing bot_data structure is unchanged.
 """
 
-from dataclasses import dataclass
-from uuid import uuid4
+from __future__ import annotations
 
 from database import Database
 
 
-@dataclass(frozen=True)
-class CreditPackage:
-    key: str
-    label: str
-    amount_sen: int
-    price_label: str
-
-
-PACKAGES = (
-    CreditPackage("starter", "Starter", 1000, "RM 10"),
-    CreditPackage("creator", "Creator", 3000, "RM 30"),
-    CreditPackage("studio", "Studio", 6000, "RM 60"),
-    CreditPackage("pro", "Pro", 12000, "RM 120"),
-)
-
-
 class PaymentService:
-    def __init__(self, db: Database, gateway_key: str | None):
+    def __init__(self, db: Database):
         self.db = db
-        self.gateway_key = gateway_key
-
-    def create_checkout(self, user_id: int, package: CreditPackage) -> str:
-        reference = uuid4().hex
-        if not self.gateway_key:
-            return (
-                "Payment gateway belum disambungkan.\n"
-                f"Reference demo: {reference}\n"
-                "Admin boleh credit secara manual dengan /addcredit."
-            )
-        return f"Payment session placeholder: {reference}"
-
-    async def confirm_webhook(self, user_id: int, amount_sen: int, reference: str) -> int:
-        return await self.db.mutate_balance(user_id, amount_sen, "topup", reference)

@@ -17,7 +17,7 @@ class Settings:
     fal_key: str
     database_path: Path
     admin_user_ids: frozenset[int]
-    payment_gateway_key: str | None
+    admin_chat_id: int | None
     bot_name: str
     checkin_bonus: int
     referral_bonus: int
@@ -43,12 +43,20 @@ def load_settings() -> Settings:
     if not fal_key:
         raise RuntimeError("FAL_KEY is missing.")
 
+    raw_chat = os.getenv("ADMIN_CHAT_ID", "").strip()
+    admin_chat_id: int | None = None
+    if raw_chat:
+        try:
+            admin_chat_id = int(raw_chat)
+        except ValueError:
+            pass
+
     return Settings(
         telegram_bot_token=token,
         fal_key=fal_key,
         database_path=Path(os.getenv("DATABASE_PATH", "data/jagovideo.sqlite3")),
         admin_user_ids=_admin_ids(os.getenv("ADMIN_USER_IDS", "")),
-        payment_gateway_key=os.getenv("PAYMENT_GATEWAY_KEY") or None,
+        admin_chat_id=admin_chat_id,
         bot_name=os.getenv("BOT_NAME", "JagoVideo Clone"),
         checkin_bonus=int(os.getenv("CHECKIN_BONUS", "50")),
         referral_bonus=int(os.getenv("REFERRAL_BONUS", "100")),

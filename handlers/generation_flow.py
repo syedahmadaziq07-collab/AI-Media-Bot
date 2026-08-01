@@ -46,10 +46,8 @@ CHOOSE_MODEL, CHOOSE_RATIO, AWAIT_INPUT, CONFIRM = range(4)
 # ── Price helpers ────────────────────────────────────────────────────────────
 
 def _fmt_price(sell_price_sen: int) -> str:
-    """Return 'Rp X,XXX (RM X.XX)' from sen value."""
-    rp = f"{sell_price_sen:,}"
-    rm = f"{sell_price_sen / 100:.2f}"
-    return f"Rp {rp} (RM {rm})"
+    """Return 'RM X.XX' from sen value."""
+    return f"RM {sell_price_sen / 100:.2f}"
 
 
 def _job_emoji(job_type: str) -> str:

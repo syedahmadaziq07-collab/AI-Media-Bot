@@ -21,6 +21,12 @@ from handlers.image_generation import image_conversation
 from handlers.referral import show_referral
 from handlers.settings import feedback, language, leaderboard, weekly_checkin
 from handlers.start import back_to_menu, start
+from handlers.topup import (
+    approve_topup_admin,
+    build_topup_conversation,
+    cancel_topup,
+    reject_topup_admin,
+)
 from handlers.video_generation import video_conversation
 from services.credit_service import CreditService
 from services.fal_service import FalService
@@ -62,7 +68,7 @@ def build_application(settings: Settings) -> Application:
         fal=fal,
         credit=CreditService(db),
         generation=GenerationService(db, fal),
-        payment=PaymentService(db, settings.payment_gateway_key),
+        payment=PaymentService(db),
     )
 
     # ── Commands ──────────────────────────────────────────────────────────────
@@ -72,20 +78,32 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(video_conversation)
     application.add_handler(image_conversation)
 
-    # ── Main-menu navigation ──────────────────────────────────────────────────
-    application.add_handler(CallbackQueryHandler(back_to_menu,    pattern=r"^menu:back$"))
-    application.add_handler(CallbackQueryHandler(show_credit,     pattern=r"^menu:credit$"))
-    application.add_handler(CallbackQueryHandler(show_balance,    pattern=r"^menu:balance$"))
-    application.add_handler(CallbackQueryHandler(show_referral,   pattern=r"^menu:referral$"))
-    application.add_handler(CallbackQueryHandler(show_history,    pattern=r"^menu:history$"))
-    application.add_handler(CallbackQueryHandler(feedback,        pattern=r"^menu:feedback$"))
-    application.add_handler(CallbackQueryHandler(language,        pattern=r"^menu:language$"))
-    application.add_handler(CallbackQueryHandler(weekly_checkin,  pattern=r"^menu:checkin$"))
-    application.add_handler(CallbackQueryHandler(leaderboard,     pattern=r"^menu:leaderboard$"))
+    # ── Top-up conversation (receipt upload flow) ─────────────────────────────
+    application.add_handler(build_topup_conversation())
 
-    # ── Sub-flow callbacks ────────────────────────────────────────────────────
-    application.add_handler(CallbackQueryHandler(choose_credit, pattern=r"^credit:"))
-    application.add_handler(CallbackQueryHandler(history_page,  pattern=r"^history:"))
+    # ── Main-menu navigation ──────────────────────────────────────────────────
+    application.add_handler(CallbackQueryHandler(back_to_menu,   pattern=r"^menu:back$"))
+    application.add_handler(CallbackQueryHandler(show_credit,    pattern=r"^menu:credit$"))
+    application.add_handler(CallbackQueryHandler(show_balance,   pattern=r"^menu:balance$"))
+    application.add_handler(CallbackQueryHandler(show_referral,  pattern=r"^menu:referral$"))
+    application.add_handler(CallbackQueryHandler(show_history,   pattern=r"^menu:history$"))
+    application.add_handler(CallbackQueryHandler(feedback,       pattern=r"^menu:feedback$"))
+    application.add_handler(CallbackQueryHandler(language,       pattern=r"^menu:language$"))
+    application.add_handler(CallbackQueryHandler(weekly_checkin, pattern=r"^menu:checkin$"))
+    application.add_handler(CallbackQueryHandler(leaderboard,    pattern=r"^menu:leaderboard$"))
+
+    # ── Credit sub-flow callbacks ─────────────────────────────────────────────
+    application.add_handler(CallbackQueryHandler(choose_credit, pattern=r"^credit:\d+$"))
+
+    # ── Topup flow callbacks (outside conversation — e.g. cancel from QR screen) ──
+    application.add_handler(CallbackQueryHandler(cancel_topup,        pattern=r"^topup:cancel:"))
+
+    # ── Admin topup approval ──────────────────────────────────────────────────
+    application.add_handler(CallbackQueryHandler(approve_topup_admin, pattern=r"^admin:approve:"))
+    application.add_handler(CallbackQueryHandler(reject_topup_admin,  pattern=r"^admin:reject:"))
+
+    # ── History pagination ────────────────────────────────────────────────────
+    application.add_handler(CallbackQueryHandler(history_page, pattern=r"^history:"))
 
     # ── Admin commands ────────────────────────────────────────────────────────
     for handler in admin_handlers():
