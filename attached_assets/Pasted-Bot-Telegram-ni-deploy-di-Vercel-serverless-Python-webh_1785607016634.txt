@@ -1,0 +1,19 @@
+Bot Telegram ni deploy di Vercel (serverless Python), webhook dah di-set dengan betul, Supabase pun dah connect (query database berjaya, return 200 OK). Tapi bila saya hantar /start dalam Telegram, TIADA reply keluar langsung — bot senyap sepenuhnya.
+
+Dari debug print yang saya tambah sebelum ni, log tunjuk function do_POST di api/telegram-webhook.py BERMULA (print pertama muncul), tapi PROSES BERHENTI SEBELUM sempat parse update Telegram atau panggil sebarang handler — tiada print seterusnya, tiada error/exception yang tertangkap.
+
+Saya nak awak buat FULL AUDIT dulu, bukan tambah print statement lagi. Buat langkah ni:
+
+1. Tunjukkan kandungan PENUH fail api/telegram-webhook.py sekarang.
+
+2. Tunjukkan kandungan PENUH fail bot/handlers.py (atau mana-mana fail yang api/telegram-webhook.py import/panggil).
+
+3. Semak dan jelaskan: 
+   - Adakah fail api/telegram-webhook.py guna format handler yang BETUL untuk Vercel Python runtime terkini? (Vercel Python function kena expose class bernama "handler" yang extend BaseHTTPRequestHandler dengan method do_POST/do_GET, ATAU guna format ASGI/WSGI app yang serasi — semak dokumentasi rasmi https://vercel.com/docs/functions/runtimes/python untuk format yang betul)
+   - Adakah cara membaca request body (Telegram punya JSON payload) dilakukan dengan betul mengikut format yang Vercel Python runtime expect? (contoh: self.rfile.read(content_length) dengan Content-Length header, bukan assume body sedia ada terus)
+   - Adakah python-telegram-bot Application di-initialize dengan cara yang serasi dengan serverless (setiap invocation kena initialize ringan, TIDAK boleh guna application.run_polling() atau method yang expect long-running event loop)
+   - Adakah ada sebarang "await" atau async call yang tidak dikendalikan dengan betul dalam konteks BaseHTTPRequestHandler yang sifatnya synchronous (ini punca biasa untuk silent failure — async function dipanggil tanpa await/event loop yang betul akan gagal senyap tanpa exception jelas)
+
+4. Selepas audit, JELASKAN kat saya punca sebenar kenapa proses berhenti selepas "do_POST called" tanpa sebarang error — jangan terus edit code dulu, terangkan dulu diagnosis awak.
+
+5. Barulah selepas saya faham dan setuju dengan diagnosis, awak boleh cadangkan dan buat fix.
