@@ -104,7 +104,14 @@ async def show_main_menu(bot: Bot, chat_id: int, user_id: int, first_name: str, 
             return
         except Exception:
             pass
-    await bot.send_message(chat_id, text, reply_markup=markup)
+    print(f"[DEBUG] Calling send_message to chat_id={chat_id} with text length={len(text)}", flush=True)
+    try:
+        await bot.send_message(chat_id, text, reply_markup=markup)
+        print("[DEBUG] send_message returned successfully", flush=True)
+    except Exception as e:
+        print(f"[ERROR] send_message failed: type={type(e).__name__} message={e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        raise
 
 
 # ── /start command ─────────────────────────────────────────────────────────────
