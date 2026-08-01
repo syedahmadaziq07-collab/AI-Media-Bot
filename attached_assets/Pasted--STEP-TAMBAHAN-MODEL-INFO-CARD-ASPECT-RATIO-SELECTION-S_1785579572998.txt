@@ -1,0 +1,42 @@
+## STEP TAMBAHAN: MODEL INFO CARD + ASPECT RATIO SELECTION
+
+Selepas user pilih model dari senarai (contoh: tekan "🔥 Gemini Omni Flash (10s)"), JANGAN terus minta gambar/prompt. Kena papar dulu mesej info card, kemudian minta user pilih aspect ratio, BARU proceed ke pengambilan gambar/prompt.
+
+### 1. Tambah field baru dalam models_config.py untuk setiap model:
+- description: penerangan ringkas model (contoh: "Google Gemini Omni Flash di server ini — 10s pada 720p dengan audio tersedia. Text-to-video dan image-to-video.")
+- max_prompt_chars: had aksara maksimum untuk prompt (contoh: 2500)
+- prompt_tips: list of string tips (contoh: ["Terangkan scene, subjek & pergerakan", "Sebut pergerakan kamera (pan, zoom, close-up)", "Tetapkan mood (sinematik, mesra, dramatik)", "Tambah cue audio untuk bunyi yang segerak"])
+- supported_ratios: list pilihan aspect ratio untuk model ni (contoh: ["16:9", "9:16", "1:1"]) — sebab tak semua model support semua ratio, kena configurable per-model
+- ratio_to_dimension_map: dict untuk convert label ratio ke parameter sebenar yang fal.ai endpoint tu perlukan (contoh sesetengah endpoint fal.ai terima "aspect_ratio": "16:9" terus, sesetengah perlukan width/height explicit — check dokumentasi fal.ai untuk setiap model sebelum hardcode)
+
+### 2. State baru dalam ConversationHandler: tambah CHOOSE_RATIO selepas CHOOSE_MODEL, sebelum AWAIT_IMAGE
+
+### 3. Bila user pilih model, bot generate mesej info card guna format ni:
+
+🔥 {display_name}
+
+{description}
+
+⚠️ {display_name} di server ini menolak prompt lebih daripada {max_prompt_chars} aksara.
+
+Yang anda hantar:
+1. 📝 prompt (maks {max_prompt_chars} aksara)
+2. 📷 gambar (pilihan)          <- papar baris ni HANYA kalau input_type model ni image_optional atau image_required, skip terus kalau text_only
+Kualiti: {resolution} · {"audio tersedia" if has_audio else "tiada audio"}
+🕐 {duration_seconds}s
+
+💡 Tips prompt:
+{loop setiap item dalam prompt_tips, papar dengan bullet "• "}
+
+📐 Pilih rasio (aspect ratio):
+
+Lepas mesej text ni, papar InlineKeyboardMarkup dengan satu butang untuk setiap ratio dalam supported_ratios (loop dinamik, jangan hardcode 3 butang — sebab model lain-lain mungkin ada bilangan ratio pilihan berbeza), setiap butang format "▲ {ratio}" atau ikon sesuai ikut orientation (landscape/portrait/square), dan satu butang "◀️ Kembali" di bawah sekali yang bawa balik ke senarai pilih model.
+
+### 4. Bila user tekan salah satu ratio button:
+- Simpan pilihan dalam context.user_data['selected_ratio']
+- Set state ke AWAIT_IMAGE (kalau model perlukan gambar) atau terus AWAIT_PROMPT (kalau text_only)
+- Proceed macam biasa ikut flow sedia ada
+
+### 5. Bila submit job ke fal.ai (fal_service.py), pastikan parameter aspect_ratio/dimension dari context.user_data['selected_ratio'] disertakan dalam payload request, guna ratio_to_dimension_map untuk convert ke format yang endpoint fal.ai spesifik tu perlukan.
+
+### 6. Butang "◀️ Kembali" pada setiap step (ratio selection, image request, prompt request) kena bawa balik SATU step sebelumnya, bukan terus ke main menu — guna ConversationHandler states dengan betul untuk track posisi semasa.

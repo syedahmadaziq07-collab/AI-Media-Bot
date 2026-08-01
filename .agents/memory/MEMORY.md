@@ -1,1 +1,2 @@
-- [SQLite async cursors](sqlite-async-cursors.md) — this environment’s aiosqlite connection requires explicit cursor fetches.
+- [SQLite async cursors](sqlite-async-cursors.md) — this environment's aiosqlite connection requires explicit cursor fetches.
+- [JagoVideo bot architecture](jagovideo-architecture.md) — project overview, key design decisions, and sharp edges for the Telegram bot.

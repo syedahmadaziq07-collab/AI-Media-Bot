@@ -1,10 +1,19 @@
 ---
 name: SQLite async cursors
-description: Compatibility note for async SQLite access in this workspace
+description: aiosqlite Connection objects in this environment do not have execute_fetchone/execute_fetchall convenience methods — use explicit async with cursor pattern instead.
 ---
 
-Use explicit cursors with `execute()`, `fetchone()`/`fetchall()`, and `close()` for aiosqlite reads.
+`aiosqlite` v0.22+ `Connection` objects expose `execute()` which returns a cursor, but do NOT have `execute_fetchone` or `execute_fetchall` shortcut methods. Always use explicit cursor fetching:
 
-**Why:** The installed aiosqlite connection does not provide the convenience `execute_fetchone` and `execute_fetchall` methods.
+```python
+# WRONG — AttributeError at runtime
+row = await db.execute_fetchone("SELECT ...", (params,))
 
-**How to apply:** Keep read helpers centralized in the database layer so handlers do not depend on driver-specific convenience methods.
+# CORRECT
+async with db.execute("SELECT ...", (params,)) as cur:
+    row = await cur.fetchone()
+```
+
+**Why:** The memory note originally documented this quirk; confirmed when `database/db.py` used `execute_fetchone` and failed at runtime with `AttributeError: 'Connection' object has no attribute 'execute_fetchone'`.
+
+**How to apply:** Any time a new DB helper is added, use `async with db.execute(...)` and call `fetchone()`/`fetchall()` on the cursor.

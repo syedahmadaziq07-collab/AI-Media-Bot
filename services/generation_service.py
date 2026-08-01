@@ -60,7 +60,13 @@ class GenerationService:
         prompt: str,
         image_path: Path | None,
         deliver: DeliveryCallback,
+        extra_args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Debit the user, upload image if any, submit to fal.ai, then poll in a background task.
+
+        extra_args is merged into the fal.ai arguments dict after the base keys (prompt,
+        image_url).  Use it to pass aspect_ratio or image_size from ratio_to_dimension_map.
+        """
         job_id = uuid4().hex
         await self.credit.debit(user_id, model.sell_price_sen, job_id)
         uploaded_url: str | None = None
@@ -70,6 +76,8 @@ class GenerationService:
             arguments: dict[str, Any] = {"prompt": prompt}
             if uploaded_url:
                 arguments["image_url"] = uploaded_url
+            if extra_args:
+                arguments.update(extra_args)
             await self.db.create_job(
                 job_id,
                 user_id,
