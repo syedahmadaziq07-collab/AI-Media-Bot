@@ -1,0 +1,23 @@
+/start sekarang berjaya reply (fix timeout sebelum ni berkesan). TAPI bila saya tekan butang inline "Buat Video" (dan mungkin butang inline lain), TIADA flow yang berlaku — kadang terus tiada respons langsung.
+
+Command text (/start) dan butang inline (callback_query) adalah DUA JENIS update Telegram yang BERBEZA. Saya nak audit sama ada code ni betul-betul handle callback_query.
+
+Buat langkah ni:
+
+1. Dalam api/telegram-webhook.py, tunjukkan bahagian kod yang check jenis update yang diterima — adakah ada logic yang check "if update.callback_query:" secara berasingan dari "if update.message:"? Tunjukkan kod tu.
+
+2. Kalau logic untuk callback_query TIADA LANGSUNG dalam kod sekarang, ini punca utama kenapa butang "Buat Video" tidak berfungsi — bot terima callback_query update tapi tiada handler yang process dia.
+
+3. Kalau logic untuk callback_query ADA, tunjukkan:
+   a. Adakah bot.answer_callback_query() dipanggil? (Ini WAJIB dipanggil Telegram dalam beberapa saat, kalau tidak Telegram akan anggap request timeout dan butang akan "loading" berterusan atau tiada respons)
+   b. Adakah routing untuk callback_data "buat_video" (atau apa sahaja callback_data yang digunakan untuk butang tu) wujud dan betul?
+   c. Adakah proses untuk callback_query ni juga terdedah kepada isu sama seperti /start tadi — terlalu banyak Supabase call berturutan yang boleh sebabkan timeout?
+
+4. Tambah print(..., flush=True) di titik-titik ni untuk debug:
+   - Sejurus update.callback_query dikesan: print(f"[DEBUG] Callback query received: {callback_data}", flush=True)
+   - Sejurus SEBELUM answer_callback_query dipanggil: print("[DEBUG] Calling answer_callback_query", flush=True)
+   - Sejurus SEBELUM edit_message_text/send_message untuk respons butang: print("[DEBUG] Sending response for callback", flush=True)
+
+JANGAN buat fix dulu selain print statement di atas — tunjukkan dulu audit dan kod sedia ada, supaya saya boleh confirm punca sebelum apa-apa perubahan logic besar dibuat.
+
+Commit dan push HANYA untuk print statement tambahan.
