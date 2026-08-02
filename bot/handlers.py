@@ -611,13 +611,9 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
     extra = model.ratio_to_dimension_map.get(ratio, {})
     arguments.update(extra)
 
-    webhook_url = f"{_vercel_domain()}/api/fal-webhook"
-
     try:
-        # Submit to fal.ai FIRST so we have the request_id before writing to DB.
-        # This eliminates the race window where the webhook could arrive after
-        # submit but before fal_request_id is persisted. (fix #10)
-        request_id = await fal.submit_job(model.fal_endpoint, arguments, webhook_url)
+        # Submit to fal.ai and get request_id + polling handle (no webhook needed).
+        request_id, fal_handle = await fal.submit_job(model.fal_endpoint, arguments)
         await _db(
             q.create_job,
             job_id, user_id, model.key, model.job_type, prompt, model.sell_price_sen,
@@ -642,13 +638,74 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
 
     user = await _db(q.get_user, user_id)
     await bot.edit_message_text(
-        f"✅ Job dihantar! ID: <code>{job_id[:8]}</code>\n"
+        f"⏳ Sedang menjana... ID: <code>{job_id[:8]}</code>\n"
         f"Baki selepas: {money(int(user['balance']))}\n\n"
-        "Anda akan menerima hasil apabila siap.",
+        "Hasil akan dihantar terus apabila siap.",
         chat_id=chat_id, message_id=msg_id,
         reply_markup=back_to_menu_markup(),
         parse_mode=ParseMode.HTML,
     )
+
+    # Spawn background task: poll fal.ai and deliver result to the user.
+    asyncio.create_task(
+        _poll_and_deliver(bot, chat_id, user_id, job_id, model, fal_handle)
+    )
+
+
+# ── Background generation task ────────────────────────────────────────────────
+
+def _utc_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _poll_and_deliver(
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    job_id: str,
+    model,
+    fal_handle,
+) -> None:
+    """Poll fal.ai for the result and send it to the user when ready."""
+    try:
+        result = await fal.wait_for_result(fal_handle)
+        output_url = fal.extract_output_url(result, model.job_type)
+        await _db(q.update_job, job_id, status="completed", output_url=output_url,
+                  completed_at=_utc_now())
+
+        short_id = f"Job <code>{job_id[:8]}</code>"
+        if model.job_type == "video":
+            await bot.send_video(
+                chat_id, output_url,
+                caption=f"✅ Video siap! {short_id}",
+                reply_markup=back_to_menu_markup(),
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await bot.send_photo(
+                chat_id, output_url,
+                caption=f"✅ Gambar siap! {short_id}",
+                reply_markup=back_to_menu_markup(),
+                parse_mode=ParseMode.HTML,
+            )
+    except Exception as exc:
+        logger.exception("Generation failed for job %s: %s", job_id, exc)
+        try:
+            await _db(q.update_job, job_id, status="failed")
+        except Exception:
+            pass
+        try:
+            await _db(credit.refund, user_id, model.sell_price_sen, f"refund:{job_id}")
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                chat_id,
+                f"❌ Generasi gagal. Kredit telah dipulangkan.\nRalat: {exc}",
+                reply_markup=back_to_menu_markup(),
+            )
+        except Exception:
+            pass
 
 
 # ── Balance ────────────────────────────────────────────────────────────────────
@@ -890,8 +947,16 @@ async def _receive_receipt(bot: Bot, message: Message, user_id: int, state: dict
     await _db(q.update_topup_request, request_id, status="pending_review", receipt_file_id=file_id)
     await _db(q.clear_conversation_state, user_id)
 
+    # Append admin-away notice if active
+    settings = await _db(q.get_app_settings)
+    away_suffix = ""
+    if settings.get("admin_away_mode"):
+        away_msg = (settings.get("admin_away_message") or "").strip()
+        if away_msg:
+            away_suffix = f"\n\nℹ️ {away_msg}"
+
     await message.reply_text(
-        "✅ Resit diterima. Admin akan menyemak dalam masa terdekat.",
+        f"✅ Resit diterima. Admin akan menyemak dalam masa terdekat.{away_suffix}",
         reply_markup=back_to_menu_markup(),
     )
 

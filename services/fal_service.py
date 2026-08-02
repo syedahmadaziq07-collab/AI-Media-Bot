@@ -1,5 +1,4 @@
-"""fal.ai wrapper — submits jobs with a webhook_url (no polling)."""
-
+"""fal.ai wrapper — submit + poll mode (no webhook required)."""
 from __future__ import annotations
 
 import asyncio
@@ -20,11 +19,20 @@ async def upload_image(path: Path) -> str:
     return await asyncio.to_thread(fal_client.upload_file, str(path))
 
 
-async def submit_job(endpoint: str, arguments: dict[str, Any], webhook_url: str) -> str:
-    """Submit a job to fal.ai with a webhook callback. Returns the request_id."""
+async def submit_job(endpoint: str, arguments: dict[str, Any]) -> tuple[str, Any]:
+    """Submit a job to fal.ai. Returns (request_id, handle).
+
+    The handle can be awaited later (in a background task) to get the result.
+    Does NOT use a webhook — polling is done via handle.get().
+    """
     _ensure_key()
-    handle = await fal_client.submit_async(endpoint, arguments, webhook_url=webhook_url)
-    return str(handle.request_id)
+    handle = await fal_client.submit_async(endpoint, arguments)
+    return str(handle.request_id), handle
+
+
+async def wait_for_result(handle: Any) -> dict[str, Any]:
+    """Wait for a submitted job handle to complete. Returns the result dict."""
+    return await handle.get()
 
 
 def extract_output_url(result: dict[str, Any], job_type: str) -> str | None:

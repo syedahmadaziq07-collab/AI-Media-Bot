@@ -1,0 +1,28 @@
+Saya nak tambah 3 fungsi kawalan admin yang akan di-trigger dari dashboard berasingan (bukan dalam bot ni). Buat langkah ni:
+
+1. TAMBAH column baru dalam table app_settings di Supabase (saya akan run SQL ni sendiri):
+   maintenance_mode BOOLEAN DEFAULT FALSE
+   maintenance_message TEXT
+   admin_away_mode BOOLEAN DEFAULT FALSE
+   admin_away_message TEXT
+
+2. MAINTENANCE MODE — Dalam api/telegram-webhook.py, SEBAIK SAHAJA update diterima (sebelum proses sebarang command/callback), semak app_settings.maintenance_mode:
+   - Jika TRUE, balas terus dengan app_settings.maintenance_message (guna bot.send_message untuk command, atau query.answer(text=..., show_alert=True) untuk callback), dan JANGAN proses apa-apa logic lain — hentikan di situ.
+   - Kecualikan admin (guna ADMIN_USER_IDS dari env var) dari sekatan ni, supaya admin tetap boleh test/guna bot semasa maintenance.
+
+3. ADMIN AWAY MODE — Dalam _create_topup_request() atau _request_receipt() (bahagian flow top-up), semak app_settings.admin_away_mode:
+   - Jika TRUE, tambah admin_away_message pada mesej yang dihantar kepada user selepas mereka hantar resit (contoh sertakan sebagai baris tambahan: "\n\nℹ️ {admin_away_message}")
+
+4. TAMBAH endpoint BARU api/admin-broadcast.py:
+   - Terima POST request dengan header X-Admin-Secret — bandingkan dengan env var ADMIN_BROADCAST_SECRET, tolak (401) jika tidak sepadan
+   - Terima body JSON { "message": "..." }
+   - Ambil SEMUA user_id dari table users (guna q.all_user_ids() yang sudah wujud)
+   - Hantar bot.send_message(user_id, message) kepada SETIAP user_id secara berturutan, dengan try/except untuk setiap satu (supaya satu kegagalan — contoh user block bot — tidak menghentikan keseluruhan proses)
+   - PENTING: guna asyncio.gather() dengan had concurrency (contoh semaphore, 20 serentak) untuk broadcast laju tanpa melebihi rate limit Telegram (~30 mesej/saat)
+   - Log setiap broadcast (jumlah berjaya/gagal) ke table broadcast_log
+   - Return JSON { "success": true, "sent_count": X, "failed_count": Y }
+   - Pastikan endpoint ni juga guna asyncio.to_thread untuk sebarang panggilan Supabase, konsisten dengan fix sebelum ni
+
+5. Tambah ADMIN_BROADCAST_SECRET sebagai environment variable baru (saya akan set sendiri di Vercel — jangan hardcode).
+
+Commit dan push selepas siap.
