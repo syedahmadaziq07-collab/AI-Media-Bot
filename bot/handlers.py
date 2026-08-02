@@ -16,6 +16,10 @@ import traceback
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+# Short alias — wraps every synchronous Supabase call so it runs in a thread
+# pool instead of blocking the asyncio event loop.
+_db = asyncio.to_thread
+
 from telegram import Bot, CallbackQuery, Message
 from telegram.constants import ParseMode
 
@@ -174,24 +178,24 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
 
     # Ensure user exists
     try:
-        q.get_user(user.id)
+        await _db(q.get_user, user.id)
     except Exception:
-        q.upsert_user(user.id, user.username, user.first_name or str(user.id))
+        await _db(q.upsert_user, user.id, user.username, user.first_name or str(user.id))
 
     first_name = user.first_name or str(user.id)
 
     print(f"[DEBUG] Sending response for callback: data={data!r}", flush=True)
     # ── Menu navigation ────────────────────────────────────────────────────────
     if data in ("menu:back", "menu:start"):
-        q.clear_conversation_state(user.id)
+        await _db(q.clear_conversation_state, user.id)
         await show_main_menu(bot, chat_id, user.id, first_name, message_id=msg_id)
 
     elif data == "menu:video":
-        q.clear_conversation_state(user.id)
+        await _db(q.clear_conversation_state, user.id)
         await _show_model_list(bot, chat_id, msg_id, "video")
 
     elif data == "menu:image":
-        q.clear_conversation_state(user.id)
+        await _db(q.clear_conversation_state, user.id)
         await _show_model_list(bot, chat_id, msg_id, "image")
 
     elif data == "menu:balance":
@@ -240,12 +244,12 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
 
     elif data.startswith("gen:") and ":back_model" in data:
         job_type = data.split(":")[1]
-        q.clear_conversation_state(user.id)
+        await _db(q.clear_conversation_state, user.id)
         await _show_model_list(bot, chat_id, msg_id, job_type)
 
     elif data.startswith("gen:") and ":back_ratio" in data:
         job_type = data.split(":")[1]
-        state = q.get_conversation_state(user.id)
+        state = await _db(q.get_conversation_state, user.id)
         model_key = state.get("model_key") if state else None
         if model_key and model_key in MODEL_BY_KEY:
             model = MODEL_BY_KEY[model_key]
@@ -257,9 +261,9 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
         await _confirm_generation(bot, chat_id, msg_id, user.id)
 
     elif data == "gen:edit":
-        state = q.get_conversation_state(user.id)
+        state = await _db(q.get_conversation_state, user.id)
         if state:
-            q.set_conversation_state(user.id, step=AWAIT_INPUT, prompt=None, image_url=None)
+            await _db(q.set_conversation_state, user.id, step=AWAIT_INPUT, prompt=None, image_url=None)
             model = MODEL_BY_KEY.get(state.get("model_key", ""))
             job_type = state.get("job_type", "video")
             input_hint = _input_hint(model)
@@ -270,7 +274,7 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
             )
 
     elif data == "gen:cancel":
-        q.clear_conversation_state(user.id)
+        await _db(q.clear_conversation_state, user.id)
         await show_main_menu(bot, chat_id, user.id, first_name, message_id=msg_id)
 
     # ── History ────────────────────────────────────────────────────────────────
@@ -313,7 +317,7 @@ async def handle_photo(message: Message, bot: Bot) -> None:
     if not user:
         return
 
-    state = q.get_conversation_state(user.id)
+    state = await _db(q.get_conversation_state, user.id)
     step = state.get("step") if state else None
 
     if step == AWAIT_INPUT:
@@ -332,7 +336,7 @@ async def handle_text_message(message: Message, bot: Bot) -> None:
     if not user:
         return
 
-    state = q.get_conversation_state(user.id)
+    state = await _db(q.get_conversation_state, user.id)
     step = state.get("step") if state else None
 
     if step == AWAIT_INPUT:
@@ -348,11 +352,17 @@ async def handle_text_message(message: Message, bot: Bot) -> None:
 async def _show_model_list(bot: Bot, chat_id: int, msg_id: int, job_type: str) -> None:
     emoji = "🎬" if job_type == "video" else "🖼️"
     label = "Video" if job_type == "video" else "Gambar"
-    await bot.edit_message_text(
-        f"{emoji} Pilih model {label}:",
-        chat_id=chat_id, message_id=msg_id,
-        reply_markup=model_list_markup(job_type),
-    )
+    print(f"[DEBUG] _show_model_list: calling edit_message_text chat_id={chat_id} msg_id={msg_id} job_type={job_type!r}", flush=True)
+    try:
+        await bot.edit_message_text(
+            f"{emoji} Pilih model {label}:",
+            chat_id=chat_id, message_id=msg_id,
+            reply_markup=model_list_markup(job_type),
+        )
+        print("[DEBUG] _show_model_list: edit_message_text returned successfully", flush=True)
+    except Exception as _e:
+        print(f"[ERROR] _show_model_list: edit_message_text failed: {type(_e).__name__}: {_e}", flush=True)
+        raise
 
 
 async def _select_model(
@@ -365,8 +375,8 @@ async def _select_model(
             reply_markup=back_to_menu_markup(),
         )
         return
-    q.set_conversation_state(user_id, step=CHOOSE_RATIO, job_type=job_type, model_key=model_key,
-                              bot_message_id=msg_id, bot_chat_id=chat_id)
+    await _db(q.set_conversation_state, user_id, step=CHOOSE_RATIO, job_type=job_type, model_key=model_key,
+              bot_message_id=msg_id, bot_chat_id=chat_id)
     await _show_ratio_selection(bot, chat_id, msg_id, model)
 
 
@@ -387,7 +397,7 @@ async def _show_ratio_selection(bot: Bot, chat_id: int, msg_id: int, model) -> N
 async def _select_ratio(
     bot: Bot, chat_id: int, msg_id: int, user_id: int, job_type: str, ratio: str
 ) -> None:
-    state = q.get_conversation_state(user_id)
+    state = await _db(q.get_conversation_state, user_id)
     model_key = state.get("model_key") if state else None
     model = MODEL_BY_KEY.get(model_key or "")
     if not model:
@@ -398,7 +408,7 @@ async def _select_ratio(
         return
     if ratio not in model.supported_ratios:
         return
-    q.set_conversation_state(user_id, step=AWAIT_INPUT, ratio=ratio)
+    await _db(q.set_conversation_state, user_id, step=AWAIT_INPUT, ratio=ratio)
     input_hint = _input_hint(model)
     await bot.edit_message_text(
         input_hint, chat_id=chat_id, message_id=msg_id,
@@ -460,7 +470,7 @@ async def _receive_generation_image(
         await message.reply_text("Gagal muat naik gambar. Cuba lagi.")
         return
 
-    q.set_conversation_state(user_id, image_url=uploaded_url)
+    await _db(q.set_conversation_state, user_id, image_url=uploaded_url)
 
     hint = f"✅ Gambar diterima.\n\n{_input_hint(model)}"
     job_type = state.get("job_type", "video")
@@ -505,8 +515,8 @@ async def _receive_generation_prompt(
         return
 
     # Check balance
-    if model and not credit.can_afford(user_id, model.sell_price_sen):
-        user = q.get_user(user_id)
+    if model and not await _db(credit.can_afford, user_id, model.sell_price_sen):
+        user = await _db(q.get_user, user_id)
         await message.reply_text(
             f"❌ Baki tidak mencukupi. Baki semasa: {money(int(user['balance']))}.\n"
             f"Kos generasi: {money(model.sell_price_sen)}.",
@@ -514,7 +524,7 @@ async def _receive_generation_prompt(
         )
         return
 
-    q.set_conversation_state(user_id, step=CONFIRM, prompt=prompt)
+    await _db(q.set_conversation_state, user_id, step=CONFIRM, prompt=prompt)
 
     confirm_text = _confirm_card(model, prompt, image_url, state.get("ratio", ""))
     markup = confirm_markup()
@@ -529,7 +539,7 @@ async def _receive_generation_prompt(
         except Exception:
             pass
     sent = await message.reply_text(confirm_text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    q.set_conversation_state(user_id, bot_message_id=sent.message_id, bot_chat_id=chat_id)
+    await _db(q.set_conversation_state, user_id, bot_message_id=sent.message_id, bot_chat_id=chat_id)
 
 
 def _confirm_card(model, prompt: str, image_url: str | None, ratio: str) -> str:
@@ -549,7 +559,7 @@ def _confirm_card(model, prompt: str, image_url: str | None, ratio: str) -> str:
 
 
 async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int) -> None:
-    state = q.get_conversation_state(user_id)
+    state = await _db(q.get_conversation_state, user_id)
     if not state or state.get("step") != CONFIRM:
         await bot.edit_message_text(
             "Sesi tamat. Sila mula semula.",
@@ -571,8 +581,8 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
     ratio = state.get("ratio", model.supported_ratios[0])
 
     # Double-check balance
-    if not credit.can_afford(user_id, model.sell_price_sen):
-        user = q.get_user(user_id)
+    if not await _db(credit.can_afford, user_id, model.sell_price_sen):
+        user = await _db(q.get_user, user_id)
         await bot.edit_message_text(
             f"❌ Baki tidak mencukupi ({money(int(user['balance']))}).",
             chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
@@ -586,7 +596,7 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
 
     job_id = uuid4().hex
     try:
-        credit.debit(user_id, model.sell_price_sen, job_id)
+        await _db(credit.debit, user_id, model.sell_price_sen, job_id)
     except Exception as exc:
         await bot.edit_message_text(
             f"❌ Gagal debit kredit: {exc}",
@@ -604,14 +614,14 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
     webhook_url = f"{_vercel_domain()}/api/fal-webhook"
 
     try:
-        q.create_job(job_id, user_id, model.key, model.job_type, prompt, model.sell_price_sen, image_url)
+        await _db(q.create_job, job_id, user_id, model.key, model.job_type, prompt, model.sell_price_sen, image_url)
         request_id = await fal.submit_job(model.fal_endpoint, arguments, webhook_url)
-        q.update_job(job_id, status="processing", fal_request_id=request_id)
+        await _db(q.update_job, job_id, status="processing", fal_request_id=request_id)
     except Exception as exc:
         logger.exception("fal.ai submit failed for job %s", job_id)
-        credit.refund(user_id, model.sell_price_sen, f"refund:{job_id}")
+        await _db(credit.refund, user_id, model.sell_price_sen, f"refund:{job_id}")
         try:
-            q.update_job(job_id, status="failed")
+            await _db(q.update_job, job_id, status="failed")
         except Exception:
             pass
         await bot.edit_message_text(
@@ -622,13 +632,13 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
 
     # Settle referral on first-ever generation
     try:
-        q.settle_referral(user_id, _referral_bonus())
+        await _db(q.settle_referral, user_id, _referral_bonus())
     except Exception:
         pass
 
-    q.clear_conversation_state(user_id)
+    await _db(q.clear_conversation_state, user_id)
 
-    user = q.get_user(user_id)
+    user = await _db(q.get_user, user_id)
     await bot.edit_message_text(
         f"✅ Job dihantar! ID: <code>{job_id[:8]}</code>\n"
         f"Baki selepas: {money(int(user['balance']))}\n\n"
@@ -642,8 +652,10 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
 # ── Balance ────────────────────────────────────────────────────────────────────
 
 async def _show_balance(bot: Bot, chat_id: int, msg_id: int, user_id: int) -> None:
-    user = q.get_user(user_id)
-    txns = q.recent_transactions(user_id)
+    user, txns = await asyncio.gather(
+        _db(q.get_user, user_id),
+        _db(q.recent_transactions, user_id),
+    )
     lines = [
         f"{t['created_at'][:10]} · {t['type']} · "
         f"{'+' if t['amount'] >= 0 else ''}{money(int(t['amount']))}"
@@ -659,7 +671,7 @@ async def _show_balance(bot: Bot, chat_id: int, msg_id: int, user_id: int) -> No
 # ── History ────────────────────────────────────────────────────────────────────
 
 async def _show_history(bot: Bot, chat_id: int, msg_id: int, user_id: int, offset: int) -> None:
-    jobs = q.recent_jobs(user_id, offset=offset)
+    jobs = await _db(q.recent_jobs, user_id, offset=offset)
     if not jobs:
         text = "Belum ada sejarah generasi."
     else:
@@ -694,9 +706,9 @@ async def _show_referral(bot: Bot, chat_id: int, msg_id: int, user_id: int, tg_b
 # ── Check-in ───────────────────────────────────────────────────────────────────
 
 async def _do_checkin(bot: Bot, chat_id: int, msg_id: int, user_id: int) -> None:
-    result = q.checkin(user_id, _checkin_bonus())
+    result = await _db(q.checkin, user_id, _checkin_bonus())
     if result is None:
-        user = q.get_user(user_id)
+        user = await _db(q.get_user, user_id)
         last = user.get("last_checkin", "")
         next_dt = "minggu depan"
         if last:
@@ -722,7 +734,7 @@ async def _do_checkin(bot: Bot, chat_id: int, msg_id: int, user_id: int) -> None
 # ── Leaderboard ────────────────────────────────────────────────────────────────
 
 async def _show_leaderboard(bot: Bot, chat_id: int, msg_id: int, user_id: int) -> None:
-    rows = q.leaderboard()
+    rows = await _db(q.leaderboard)
     if not rows:
         text = "Papan pendahulu kosong buat masa ini."
     else:
@@ -742,7 +754,7 @@ async def _show_leaderboard(bot: Bot, chat_id: int, msg_id: int, user_id: int) -
 # ── Credit packages ────────────────────────────────────────────────────────────
 
 async def _show_credit_packages(bot: Bot, chat_id: int, msg_id: int) -> None:
-    packages = q.get_credit_packages()
+    packages = await _db(q.get_credit_packages)
     if not packages:
         await bot.edit_message_text(
             "Tiada pakej kredit tersedia buat masa ini.",
@@ -760,7 +772,10 @@ async def _create_topup_request(
     bot: Bot, chat_id: int, msg_id: int, user_id: int, pkg_id: int
 ) -> None:
     try:
-        pkg = q.get_credit_package(pkg_id)
+        pkg, settings = await asyncio.gather(
+            _db(q.get_credit_package, pkg_id),
+            _db(q.get_payment_settings),
+        )
     except KeyError:
         await bot.edit_message_text(
             "Pakej tidak ditemui.", chat_id=chat_id, message_id=msg_id,
@@ -768,7 +783,6 @@ async def _create_topup_request(
         )
         return
 
-    settings = q.get_payment_settings()
     expiry_minutes = settings["payment_expiry_minutes"] if settings else 30
     instructions = settings["payment_instructions"] if settings and settings.get("payment_instructions") else "Bayar jumlah yang ditetapkan."
     qr_url = settings["qr_image_url"] if settings else None
@@ -778,7 +792,7 @@ async def _create_topup_request(
     expires_at = now + timedelta(minutes=expiry_minutes)
     request_id = uuid4().hex
 
-    q.create_topup_request(
+    await _db(q.create_topup_request,
         request_id=request_id,
         user_id=user_id,
         package_id=pkg_id,
@@ -787,7 +801,7 @@ async def _create_topup_request(
         created_at=now.isoformat(),
         expires_at=expires_at.isoformat(),
     )
-    q.set_conversation_state(user_id, topup_request_id=request_id)
+    await _db(q.set_conversation_state, user_id, topup_request_id=request_id)
 
     pkg_label = f"{pkg['name']} — RM {pkg['price_rm']:.2f}"
     if pkg["bonus_percent"]:
@@ -825,7 +839,7 @@ async def _request_receipt(
     bot: Bot, chat_id: int, msg_id: int, user_id: int, request_id: str
 ) -> None:
     try:
-        req = q.get_topup_request(request_id)
+        req = await _db(q.get_topup_request, request_id)
     except KeyError:
         await bot.edit_message_text(
             "Permintaan tidak ditemui.", chat_id=chat_id, message_id=msg_id,
@@ -838,7 +852,7 @@ async def _request_receipt(
             chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
         )
         return
-    q.set_conversation_state(user_id, step=AWAIT_RECEIPT, topup_request_id=request_id)
+    await _db(q.set_conversation_state, user_id, step=AWAIT_RECEIPT, topup_request_id=request_id)
     await bot.edit_message_text(
         "📤 Sila hantar gambar resit pembayaran sekarang.",
         chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
@@ -852,7 +866,7 @@ async def _receive_receipt(bot: Bot, message: Message, user_id: int, state: dict
         return
 
     try:
-        req = q.get_topup_request(request_id)
+        req = await _db(q.get_topup_request, request_id)
     except KeyError:
         await message.reply_text("Permintaan tidak ditemui.", reply_markup=back_to_menu_markup())
         return
@@ -871,8 +885,8 @@ async def _receive_receipt(bot: Bot, message: Message, user_id: int, state: dict
         await message.reply_text("Sila hantar gambar resit.")
         return
 
-    q.update_topup_request(request_id, status="pending_review", receipt_file_id=file_id)
-    q.clear_conversation_state(user_id)
+    await _db(q.update_topup_request, request_id, status="pending_review", receipt_file_id=file_id)
+    await _db(q.clear_conversation_state, user_id)
 
     await message.reply_text(
         "✅ Resit diterima. Admin akan menyemak dalam masa terdekat.",
@@ -882,7 +896,7 @@ async def _receive_receipt(bot: Bot, message: Message, user_id: int, state: dict
     # Notify admin
     admin_chat = _admin_chat_id()
     if admin_chat:
-        pkg = q.get_credit_package(req["package_id"])
+        pkg = await _db(q.get_credit_package, req["package_id"])
         caption = (
             f"📥 Resit top-up baharu\n"
             f"User: {user_id}\n"
@@ -903,12 +917,12 @@ async def _cancel_topup(
     bot: Bot, chat_id: int, msg_id: int, user_id: int, request_id: str
 ) -> None:
     try:
-        req = q.get_topup_request(request_id)
+        req = await _db(q.get_topup_request, request_id)
         if req["status"] in ("awaiting_receipt", "pending_review"):
-            q.update_topup_request(request_id, status="cancelled")
+            await _db(q.update_topup_request, request_id, status="cancelled")
     except Exception:
         pass
-    q.clear_conversation_state(user_id)
+    await _db(q.clear_conversation_state, user_id)
     await show_main_menu(bot, chat_id, user_id, "", message_id=msg_id)
 
 
@@ -918,7 +932,7 @@ async def _approve_topup(
     bot: Bot, chat_id: int, msg_id: int, admin_id: int, request_id: str, query: CallbackQuery
 ) -> None:
     try:
-        user_id, new_balance, amount_rm, bonus_pct, pkg_name = q.approve_topup(request_id, admin_id)
+        user_id, new_balance, amount_rm, bonus_pct, pkg_name = await _db(q.approve_topup, request_id, admin_id)
     except Exception as exc:
         await query.answer(f"Gagal: {exc}", show_alert=True)
         return
@@ -951,7 +965,7 @@ async def _reject_topup(
     bot: Bot, chat_id: int, msg_id: int, admin_id: int, request_id: str, query: CallbackQuery
 ) -> None:
     try:
-        user_id, pkg_name = q.reject_topup(request_id, admin_id)
+        user_id, pkg_name = await _db(q.reject_topup, request_id, admin_id)
     except Exception as exc:
         await query.answer(f"Gagal: {exc}", show_alert=True)
         return
@@ -998,7 +1012,7 @@ async def handle_command(message: Message, bot: Bot) -> None:
             return
         try:
             target_id, amount = int(args[0]), int(args[1])
-            new_bal = q.mutate_balance(target_id, amount, "admin_adjust", f"admin:{user.id}")
+            new_bal = await _db(q.mutate_balance, target_id, amount, "admin_adjust", f"admin:{user.id}")
             await message.reply_text(f"Baki user {target_id}: {money(new_bal)}")
         except Exception as exc:
             await message.reply_text(f"Gagal: {exc}")
@@ -1007,7 +1021,7 @@ async def handle_command(message: Message, bot: Bot) -> None:
     if cmd == "stats":
         if not _is_admin(user.id):
             return
-        stats = q.admin_stats()
+        stats = await _db(q.admin_stats)
         await message.reply_text(
             f"Users: {stats['users']}\nJobs: {stats['jobs']}\n"
             f"Completed: {stats['completed']}\nSpent: {money(stats['spent'])}"
@@ -1021,7 +1035,7 @@ async def handle_command(message: Message, bot: Bot) -> None:
         if not msg_text:
             await message.reply_text("Guna: /broadcast mesej")
             return
-        ids = q.all_user_ids()
+        ids = await _db(q.all_user_ids)
         sent = 0
         for uid in ids:
             try:
