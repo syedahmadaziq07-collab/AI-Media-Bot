@@ -36,8 +36,10 @@ async def _process(data: dict, token: str) -> None:
             # ── Maintenance mode check ────────────────────────────────────────
             # Must happen BEFORE any routing so ALL update types are blocked.
             # Fail-safe: if fetching settings fails, bot continues normally.
+            print(f"[MAINT-DEBUG] Checking maintenance for user_id={user_id}", flush=True)
             try:
                 settings = await asyncio.to_thread(q.get_app_settings)
+                print(f"[MAINT-DEBUG] maintenance_mode={settings.get('maintenance_mode')}, admin_chat_id_raw={settings.get('admin_chat_id')!r}", flush=True)
 
                 if settings.get("maintenance_mode"):
                     # Build admin set: app_settings.admin_chat_id (live, DB)
@@ -53,6 +55,7 @@ async def _process(data: dict, token: str) -> None:
                             except (ValueError, AttributeError):
                                 pass
 
+                    print(f"[MAINT-DEBUG] parsed admin_ids={admin_ids}, user_id in admin_ids={user_id in admin_ids if user_id is not None else False}", flush=True)
                     is_admin = bool(user_id and user_id in admin_ids)
 
                     if not is_admin:
