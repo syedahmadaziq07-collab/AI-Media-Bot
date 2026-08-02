@@ -614,16 +614,18 @@ async def _confirm_generation(bot: Bot, chat_id: int, msg_id: int, user_id: int)
     webhook_url = f"{_vercel_domain()}/api/fal-webhook"
 
     try:
-        await _db(q.create_job, job_id, user_id, model.key, model.job_type, prompt, model.sell_price_sen, image_url)
+        # Submit to fal.ai FIRST so we have the request_id before writing to DB.
+        # This eliminates the race window where the webhook could arrive after
+        # submit but before fal_request_id is persisted. (fix #10)
         request_id = await fal.submit_job(model.fal_endpoint, arguments, webhook_url)
-        await _db(q.update_job, job_id, status="processing", fal_request_id=request_id)
+        await _db(
+            q.create_job,
+            job_id, user_id, model.key, model.job_type, prompt, model.sell_price_sen,
+            image_url, fal_request_id=request_id, status="processing",
+        )
     except Exception as exc:
         logger.exception("fal.ai submit failed for job %s", job_id)
         await _db(credit.refund, user_id, model.sell_price_sen, f"refund:{job_id}")
-        try:
-            await _db(q.update_job, job_id, status="failed")
-        except Exception:
-            pass
         await bot.edit_message_text(
             f"❌ Gagal menghantar ke fal.ai: {exc}",
             chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
