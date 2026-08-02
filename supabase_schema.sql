@@ -178,3 +178,26 @@ AS $$
     ORDER BY completed DESC
     LIMIT p_limit;
 $$;
+
+-- ── App settings (maintenance mode, admin-away mode) ───────────────────────────
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    id                   INTEGER PRIMARY KEY DEFAULT 1,
+    maintenance_mode     INTEGER NOT NULL DEFAULT 0,
+    maintenance_message  TEXT    DEFAULT 'Bot dalam penyelenggaraan. Sila cuba lagi kemudian.',
+    admin_away_mode      INTEGER NOT NULL DEFAULT 0,
+    admin_away_message   TEXT    DEFAULT 'Admin sedang tidak berada. Semakan mungkin mengambil masa lebih lama.'
+);
+
+-- Ensure a default row always exists
+INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ── Broadcast log ──────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS broadcast_log (
+    id           BIGSERIAL PRIMARY KEY,
+    message      TEXT    NOT NULL,
+    sent_count   INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

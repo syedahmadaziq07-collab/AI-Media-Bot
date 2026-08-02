@@ -1,4 +1,12 @@
-"""Polling entry point for JagoVideo Clone bot on Replit.
+"""Local development / testing entry point for JagoVideo Clone bot.
+
+⚠️  NOT FOR PRODUCTION ⚠️
+Production runs on Vercel via:
+  api/telegram-webhook.py  — receives Telegram webhook updates
+  api/fal-webhook.py       — receives fal.ai job completion callbacks
+
+This script is a polling-mode convenience for local testing only.
+It connects to the same Supabase database as production — be careful.
 
 Runs two async services concurrently:
   - python-telegram-bot polling (handles all Telegram updates)
@@ -20,7 +28,6 @@ from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 import db.queries as q
-from db.sqlite_db import init_db
 from bot.handlers import (
     handle_callback,
     handle_command,
@@ -108,10 +115,16 @@ async def main() -> None:
         raise RuntimeError(
             "FAL_KEY is not set. Add it via Replit Secrets (Tools → Secrets)."
         )
+    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set. "
+            "Add them via Replit Secrets (Tools → Secrets)."
+        )
 
-    logger.info("Initialising database…")
-    init_db()
-    logger.info("Database ready.")
+    logger.warning(
+        "⚠️  Running in LOCAL POLLING mode against Supabase. "
+        "This is for development/testing only — production uses Vercel webhooks."
+    )
 
     # ── Telegram bot ──────────────────────────────────────────────────────────
     ptb_app = Application.builder().token(token).build()
@@ -142,7 +155,8 @@ async def main() -> None:
         await ptb_app.updater.start_polling(drop_pending_updates=True)
         await site.start()
         logger.info(
-            "JagoVideo Clone bot started (polling). Admin API listening on port %d.", port
+            "JagoVideo Clone bot started (polling, LOCAL DEV). "
+            "Admin API listening on port %d.", port
         )
 
         await stop_event.wait()  # block until SIGTERM / SIGINT

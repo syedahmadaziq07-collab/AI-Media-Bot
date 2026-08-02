@@ -1,9 +1,18 @@
-"""Stub — Supabase replaced by SQLite. Import from db.sqlite_db instead."""
-# This file is kept to avoid import errors from any tooling that references it.
-# The active DB layer is db.sqlite_db / db.queries.
+"""Supabase client singleton — production database for Vercel deployment."""
+from __future__ import annotations
 
-def get_client():
-    raise RuntimeError(
-        "Supabase client is not used in this deployment. "
-        "All database access goes through db.queries (SQLite)."
-    )
+import os
+
+from supabase import Client, create_client
+
+_client: Client | None = None
+
+
+def get_client() -> Client:
+    """Return a module-level Supabase client (created once per process)."""
+    global _client
+    if _client is None:
+        url = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        _client = create_client(url, key)
+    return _client

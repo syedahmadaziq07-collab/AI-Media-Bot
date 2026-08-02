@@ -1,20 +1,28 @@
-"""SQLite query helpers — same public interface as the Supabase version."""
+"""Supabase query helpers — production database layer for Vercel deployment.
+
+All functions are synchronous. Async callers (handlers.py, fal-webhook.py)
+wrap every call with asyncio.to_thread() so the event loop is never blocked.
+"""
 from __future__ import annotations
 
-import sqlite3
-import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .sqlite_db import get_connection
+from .supabase_client import get_client
 
 
-def _utc_now() -> str:
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def utc_now() -> str:
+    """Public helper — imported by api/fal-webhook.py."""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _row(r: sqlite3.Row | None) -> dict | None:
-    return dict(r) if r is not None else None
+def _rpc_scalar(data: Any) -> int:
+    """Extract an integer scalar from a Supabase RPC response."""
+    if isinstance(data, list):
+        return int(data[0])
+    return int(data)
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -25,36 +33,29 @@ def upsert_user(
     first_name: str,
     referred_by: int | None = None,
 ) -> dict:
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO users (user_id, username, first_name, created_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            username   = excluded.username,
-            first_name = excluded.first_name
-        """,
-        (user_id, username, first_name, _utc_now()),
-    )
-    conn.commit()
+    sb = get_client()
+
+    # Upsert the user row (update username/first_name on conflict)
+    sb.table("users").upsert(
+        {"user_id": user_id, "username": username, "first_name": first_name},
+        on_conflict="user_id",
+    ).execute()
 
     user = get_user(user_id)
 
+    # Set referred_by only if not already set
     if referred_by and referred_by != user_id and not user.get("referred_by"):
-        referrer = conn.execute(
-            "SELECT user_id FROM users WHERE user_id = ?", (referred_by,)
-        ).fetchone()
-        if referrer:
+        referrer = (
+            sb.table("users").select("user_id").eq("user_id", referred_by).execute()
+        )
+        if referrer.data:
             try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO referrals (referrer_id, referred_id, created_at) VALUES (?, ?, ?)",
-                    (referred_by, user_id, _utc_now()),
-                )
-                conn.execute(
-                    "UPDATE users SET referred_by = ? WHERE user_id = ? AND referred_by IS NULL",
-                    (referred_by, user_id),
-                )
-                conn.commit()
+                sb.table("users").update({"referred_by": referred_by}).eq(
+                    "user_id", user_id
+                ).is_("referred_by", "null").execute()
+                sb.table("referrals").upsert(
+                    {"referrer_id": referred_by, "referred_id": user_id}
+                ).execute()
             except Exception:
                 pass
 
@@ -62,12 +63,10 @@ def upsert_user(
 
 
 def get_user(user_id: int) -> dict:
-    row = get_connection().execute(
-        "SELECT * FROM users WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    if row is None:
+    res = get_client().table("users").select("*").eq("user_id", user_id).execute()
+    if not res.data:
         raise KeyError(f"User {user_id} not found")
-    return dict(row)
+    return res.data[0]
 
 
 def balance(user_id: int) -> int:
@@ -75,41 +74,42 @@ def balance(user_id: int) -> int:
 
 
 def mutate_balance(user_id: int, amount: int, txn_type: str, reference_id: str) -> int:
-    """Atomic balance mutation using BEGIN IMMEDIATE. Returns new balance."""
-    conn = get_connection()
-    # Use a fresh connection for this transaction to avoid conflicts
-    db_path = conn.execute("PRAGMA database_list").fetchone()["file"]
-    with sqlite3.connect(db_path, timeout=30) as c:
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA busy_timeout=10000")
-        c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        if row is None:
-            raise KeyError(f"User {user_id} not found")
-        new_balance = int(row["balance"]) + amount
-        if new_balance < 0:
-            raise ValueError(f"Insufficient balance: {row['balance']} + {amount} < 0")
-        txn_id = uuid.uuid4().hex
-        c.execute(
-            "UPDATE users SET balance = ? WHERE user_id = ?",
-            (new_balance, user_id),
-        )
-        c.execute(
-            "INSERT INTO transactions (id, user_id, amount, type, reference_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (txn_id, user_id, amount, txn_type, reference_id, _utc_now()),
-        )
-        c.execute("COMMIT")
-    return new_balance
+    """Atomic balance mutation via Supabase RPC. Returns new balance."""
+    sb = get_client()
+    if amount < 0:
+        res = sb.rpc(
+            "deduct_credit",
+            {
+                "p_user_id": user_id,
+                "p_amount": abs(amount),
+                "p_type": txn_type,
+                "p_reference_id": reference_id,
+            },
+        ).execute()
+    else:
+        res = sb.rpc(
+            "add_credit",
+            {
+                "p_user_id": user_id,
+                "p_amount": amount,
+                "p_type": txn_type,
+                "p_reference_id": reference_id,
+            },
+        ).execute()
+    return _rpc_scalar(res.data)
 
 
 def recent_transactions(user_id: int, limit: int = 5) -> list[dict]:
-    rows = get_connection().execute(
-        "SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-        (user_id, limit),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    res = (
+        get_client()
+        .table("transactions")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
 
 
 # ── Jobs ───────────────────────────────────────────────────────────────────────
@@ -125,35 +125,38 @@ def create_job(
     fal_request_id: str | None = None,
     status: str = "pending",
 ) -> dict:
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO jobs
-            (id, user_id, model_key, job_type, prompt, cost,
-             input_image_url, fal_request_id, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (job_id, user_id, model_key, job_type, prompt, cost,
-         input_image_url, fal_request_id, status, _utc_now()),
-    )
-    conn.commit()
+    get_client().table("jobs").insert(
+        {
+            "id": job_id,
+            "user_id": user_id,
+            "model_key": model_key,
+            "job_type": job_type,
+            "prompt": prompt,
+            "cost": cost,
+            "input_image_url": input_image_url,
+            "fal_request_id": fal_request_id,
+            "status": status,
+        }
+    ).execute()
     return get_job(job_id)
 
 
 def get_job(job_id: str) -> dict:
-    row = get_connection().execute(
-        "SELECT * FROM jobs WHERE id = ?", (job_id,)
-    ).fetchone()
-    if row is None:
+    res = get_client().table("jobs").select("*").eq("id", job_id).execute()
+    if not res.data:
         raise KeyError(f"Job {job_id} not found")
-    return dict(row)
+    return res.data[0]
 
 
 def get_job_by_fal_request(fal_request_id: str) -> dict | None:
-    row = get_connection().execute(
-        "SELECT * FROM jobs WHERE fal_request_id = ?", (fal_request_id,)
-    ).fetchone()
-    return dict(row) if row else None
+    res = (
+        get_client()
+        .table("jobs")
+        .select("*")
+        .eq("fal_request_id", fal_request_id)
+        .execute()
+    )
+    return res.data[0] if res.data else None
 
 
 def update_job(job_id: str, **kwargs: Any) -> None:
@@ -161,57 +164,69 @@ def update_job(job_id: str, **kwargs: Any) -> None:
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [job_id]
-    conn = get_connection()
-    conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", values)
-    conn.commit()
+    get_client().table("jobs").update(fields).eq("id", job_id).execute()
 
 
 def recent_jobs(user_id: int, offset: int = 0, limit: int = 8) -> list[dict]:
-    rows = get_connection().execute(
-        "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (user_id, limit, offset),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    res = (
+        get_client()
+        .table("jobs")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    return res.data or []
 
 
 def user_stats(user_id: int) -> dict:
-    conn = get_connection()
-    total = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE user_id = ?", (user_id,)
-    ).fetchone()[0]
-    completed = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status = 'completed'", (user_id,)
-    ).fetchone()[0]
-    return {"total": total, "completed": completed}
+    sb = get_client()
+    total_res = (
+        sb.table("jobs").select("id", count="exact").eq("user_id", user_id).execute()
+    )
+    completed_res = (
+        sb.table("jobs")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("status", "completed")
+        .execute()
+    )
+    return {
+        "total": total_res.count or 0,
+        "completed": completed_res.count or 0,
+    }
 
 
 # ── Credit packages ────────────────────────────────────────────────────────────
 
 def get_credit_packages() -> list[dict]:
-    rows = get_connection().execute(
-        "SELECT * FROM credit_packages WHERE is_active = 1"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    res = (
+        get_client()
+        .table("credit_packages")
+        .select("*")
+        .eq("is_active", True)
+        .execute()
+    )
+    return res.data or []
 
 
 def get_credit_package(pkg_id: int) -> dict:
-    row = get_connection().execute(
-        "SELECT * FROM credit_packages WHERE id = ?", (pkg_id,)
-    ).fetchone()
-    if row is None:
+    res = (
+        get_client().table("credit_packages").select("*").eq("id", pkg_id).execute()
+    )
+    if not res.data:
         raise KeyError(f"Package {pkg_id} not found")
-    return dict(row)
+    return res.data[0]
 
 
 # ── Payment settings ───────────────────────────────────────────────────────────
 
 def get_payment_settings() -> dict | None:
-    row = get_connection().execute(
-        "SELECT * FROM payment_settings WHERE id = 1"
-    ).fetchone()
-    return dict(row) if row else None
+    res = (
+        get_client().table("payment_settings").select("*").eq("id", 1).execute()
+    )
+    return res.data[0] if res.data else None
 
 
 # ── Topup requests ─────────────────────────────────────────────────────────────
@@ -225,27 +240,31 @@ def create_topup_request(
     created_at: str,
     expires_at: str,
 ) -> None:
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO topup_requests
-            (id, user_id, package_id, amount_rm, bonus_percent,
-             status, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, 'awaiting_receipt', ?, ?)
-        """,
-        (request_id, user_id, package_id, amount_rm, bonus_percent,
-         created_at, expires_at),
-    )
-    conn.commit()
+    get_client().table("topup_requests").insert(
+        {
+            "id": request_id,
+            "user_id": user_id,
+            "package_id": package_id,
+            "amount_rm": amount_rm,
+            "bonus_percent": bonus_percent,
+            "status": "awaiting_receipt",
+            "created_at": created_at,
+            "expires_at": expires_at,
+        }
+    ).execute()
 
 
 def get_topup_request(request_id: str) -> dict:
-    row = get_connection().execute(
-        "SELECT * FROM topup_requests WHERE id = ?", (request_id,)
-    ).fetchone()
-    if row is None:
+    res = (
+        get_client()
+        .table("topup_requests")
+        .select("*")
+        .eq("id", request_id)
+        .execute()
+    )
+    if not res.data:
         raise KeyError(f"Topup request {request_id} not found")
-    return dict(row)
+    return res.data[0]
 
 
 def update_topup_request(request_id: str, **kwargs: Any) -> None:
@@ -253,11 +272,7 @@ def update_topup_request(request_id: str, **kwargs: Any) -> None:
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [request_id]
-    conn = get_connection()
-    conn.execute(f"UPDATE topup_requests SET {set_clause} WHERE id = ?", values)
-    conn.commit()
+    get_client().table("topup_requests").update(fields).eq("id", request_id).execute()
 
 
 def approve_topup(request_id: str, admin_id: int) -> tuple[int, int, float, int, str]:
@@ -272,7 +287,7 @@ def approve_topup(request_id: str, admin_id: int) -> tuple[int, int, float, int,
         request_id,
         status="approved",
         admin_id=admin_id,
-        processed_at=_utc_now(),
+        processed_at=utc_now(),
     )
     return req["user_id"], new_balance, float(req["amount_rm"]), req["bonus_percent"], pkg["name"]
 
@@ -287,7 +302,7 @@ def reject_topup(request_id: str, admin_id: int) -> tuple[int, str]:
         request_id,
         status="rejected",
         admin_id=admin_id,
-        processed_at=_utc_now(),
+        processed_at=utc_now(),
     )
     return req["user_id"], pkg["name"]
 
@@ -295,10 +310,14 @@ def reject_topup(request_id: str, admin_id: int) -> tuple[int, str]:
 # ── Conversation state ─────────────────────────────────────────────────────────
 
 def get_conversation_state(user_id: int) -> dict | None:
-    row = get_connection().execute(
-        "SELECT * FROM conversation_state WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    return dict(row) if row else None
+    res = (
+        get_client()
+        .table("conversation_state")
+        .select("*")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return res.data[0] if res.data else None
 
 
 def set_conversation_state(user_id: int, **kwargs: Any) -> None:
@@ -310,32 +329,24 @@ def set_conversation_state(user_id: int, **kwargs: Any) -> None:
     if not fields:
         return
 
-    conn = get_connection()
-    # Try UPDATE first; INSERT if no row exists
-    existing = conn.execute(
-        "SELECT user_id FROM conversation_state WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    now = _utc_now()
-    if existing:
-        set_clause = ", ".join(f"{k} = ?" for k in fields) + ", updated_at = ?"
-        values = list(fields.values()) + [now, user_id]
-        conn.execute(f"UPDATE conversation_state SET {set_clause} WHERE user_id = ?", values)
+    sb = get_client()
+    fields["updated_at"] = utc_now()
+
+    existing = (
+        sb.table("conversation_state")
+        .select("user_id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if existing.data:
+        sb.table("conversation_state").update(fields).eq("user_id", user_id).execute()
     else:
         fields["user_id"] = user_id
-        fields["updated_at"] = now
-        cols = ", ".join(fields)
-        placeholders = ", ".join("?" * len(fields))
-        conn.execute(
-            f"INSERT INTO conversation_state ({cols}) VALUES ({placeholders})",
-            list(fields.values()),
-        )
-    conn.commit()
+        sb.table("conversation_state").insert(fields).execute()
 
 
 def clear_conversation_state(user_id: int) -> None:
-    conn = get_connection()
-    conn.execute("DELETE FROM conversation_state WHERE user_id = ?", (user_id,))
-    conn.commit()
+    get_client().table("conversation_state").delete().eq("user_id", user_id).execute()
 
 
 # ── Check-in ───────────────────────────────────────────────────────────────────
@@ -346,35 +357,37 @@ def checkin(user_id: int, bonus_sen: int) -> int | None:
     now = datetime.now(UTC)
     last = user.get("last_checkin")
     if last:
+        # Supabase returns ISO strings; handle both offset-aware and naive
         last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
         if last_dt.tzinfo is None:
             last_dt = last_dt.replace(tzinfo=UTC)
         if now - last_dt < timedelta(days=7):
             return None
-    conn = get_connection()
-    conn.execute(
-        "UPDATE users SET last_checkin = ? WHERE user_id = ?",
-        (now.strftime("%Y-%m-%dT%H:%M:%SZ"), user_id),
+    get_client().table("users").update(
+        {"last_checkin": now.isoformat()}
+    ).eq("user_id", user_id).execute()
+    return mutate_balance(
+        user_id, bonus_sen, "checkin", f"checkin:{now.date().isoformat()}"
     )
-    conn.commit()
-    return mutate_balance(user_id, bonus_sen, "checkin", f"checkin:{now.date().isoformat()}")
 
 
 # ── Referral ───────────────────────────────────────────────────────────────────
 
 def settle_referral(referred_id: int, bonus_sen: int) -> None:
     """Credit referral bonus to both parties if not yet paid."""
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM referrals WHERE referred_id = ?", (referred_id,)
-    ).fetchone()
-    if not row or row["bonus_paid"]:
+    sb = get_client()
+    res = (
+        sb.table("referrals").select("*").eq("referred_id", referred_id).execute()
+    )
+    if not res.data:
+        return
+    row = res.data[0]
+    if row["bonus_paid"]:
         return
     referrer_id = row["referrer_id"]
-    conn.execute(
-        "UPDATE referrals SET bonus_paid = 1 WHERE referred_id = ?", (referred_id,)
-    )
-    conn.commit()
+    sb.table("referrals").update({"bonus_paid": 1}).eq(
+        "referred_id", referred_id
+    ).execute()
     ref_id = f"referral:{referred_id}"
     mutate_balance(referrer_id, bonus_sen, "referral_bonus", ref_id)
     mutate_balance(referred_id, bonus_sen, "referral_bonus", ref_id)
@@ -383,61 +396,83 @@ def settle_referral(referred_id: int, bonus_sen: int) -> None:
 # ── Leaderboard / admin ────────────────────────────────────────────────────────
 
 def leaderboard(limit: int = 10) -> list[dict]:
-    rows = get_connection().execute(
-        """
-        SELECT user_id, COUNT(*) AS completed
-        FROM jobs
-        WHERE status = 'completed'
-        GROUP BY user_id
-        ORDER BY completed DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    try:
+        res = get_client().rpc("leaderboard_top", {"p_limit": limit}).execute()
+        return res.data or []
+    except Exception:
+        # Fallback if the RPC doesn't exist yet
+        res = (
+            get_client()
+            .table("jobs")
+            .select("user_id")
+            .eq("status", "completed")
+            .execute()
+        )
+        counts: dict[int, int] = {}
+        for row in (res.data or []):
+            uid = row["user_id"]
+            counts[uid] = counts.get(uid, 0) + 1
+        sorted_rows = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return [{"user_id": uid, "completed": cnt} for uid, cnt in sorted_rows]
 
 
 def admin_stats() -> dict:
-    conn = get_connection()
-    users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    completed = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'completed'"
-    ).fetchone()[0]
-    spent = conn.execute(
-        "SELECT COALESCE(SUM(cost), 0) FROM jobs WHERE status = 'completed'"
-    ).fetchone()[0]
-    return {"users": users, "jobs": jobs, "completed": completed, "spent": spent}
+    sb = get_client()
+    users_res = sb.table("users").select("user_id", count="exact").execute()
+    jobs_res = sb.table("jobs").select("id", count="exact").execute()
+    completed_res = (
+        sb.table("jobs").select("id", count="exact").eq("status", "completed").execute()
+    )
+    spent_res = (
+        sb.table("jobs").select("cost").eq("status", "completed").execute()
+    )
+    spent = sum(int(r["cost"]) for r in (spent_res.data or []))
+    return {
+        "users": users_res.count or 0,
+        "jobs": jobs_res.count or 0,
+        "completed": completed_res.count or 0,
+        "spent": spent,
+    }
 
 
 def all_user_ids() -> list[int]:
-    rows = get_connection().execute("SELECT user_id FROM users").fetchall()
-    return [r["user_id"] for r in rows]
+    res = get_client().table("users").select("user_id").execute()
+    return [int(r["user_id"]) for r in (res.data or [])]
 
 
 # ── App settings ───────────────────────────────────────────────────────────────
 
+_APP_SETTINGS_DEFAULTS = {
+    "maintenance_mode": 0,
+    "maintenance_message": "Bot dalam penyelenggaraan. Sila cuba lagi kemudian.",
+    "admin_away_mode": 0,
+    "admin_away_message": "Admin sedang tidak berada. Semakan mungkin mengambil masa lebih lama.",
+}
+
+
 def get_app_settings() -> dict:
-    row = get_connection().execute(
-        "SELECT * FROM app_settings WHERE id = 1"
-    ).fetchone()
-    if row is None:
-        return {
-            "maintenance_mode": 0,
-            "maintenance_message": "Bot dalam penyelenggaraan. Sila cuba lagi kemudian.",
-            "admin_away_mode": 0,
-            "admin_away_message": "Admin sedang tidak berada. Semakan mungkin mengambil masa lebih lama.",
-        }
-    return dict(row)
+    try:
+        res = (
+            get_client().table("app_settings").select("*").eq("id", 1).execute()
+        )
+        if res.data:
+            return res.data[0]
+    except Exception:
+        pass
+    return dict(_APP_SETTINGS_DEFAULTS)
 
 
 # ── Broadcast log ──────────────────────────────────────────────────────────────
 
 def log_broadcast(message: str, sent_count: int, failed_count: int) -> None:
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO broadcast_log (message, sent_count, failed_count, created_at) "
-        "VALUES (?, ?, ?, ?)",
-        (message, sent_count, failed_count, _utc_now()),
-    )
-    conn.commit()
+    try:
+        get_client().table("broadcast_log").insert(
+            {
+                "message": message,
+                "sent_count": sent_count,
+                "failed_count": failed_count,
+                "created_at": utc_now(),
+            }
+        ).execute()
+    except Exception:
+        pass  # Non-critical — don't let logging failures break broadcast
