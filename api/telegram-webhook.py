@@ -24,12 +24,54 @@ from bot.handlers import (
     handle_photo,
     handle_text_message,
 )
+import db.queries as q
 
 
 async def _process(data: dict, token: str) -> None:
     try:
         async with Bot(token=token) as bot:
             update = Update.de_json(data, bot)
+            user_id = update.effective_user.id if update.effective_user else None
+
+            # ── Maintenance mode check ────────────────────────────────────────
+            # Must happen BEFORE any routing so ALL update types are blocked.
+            # Fail-safe: if fetching settings fails, bot continues normally.
+            try:
+                settings = await asyncio.to_thread(q.get_app_settings)
+
+                if settings.get("maintenance_mode"):
+                    # Build admin set: app_settings.admin_chat_id (live, DB)
+                    # merged with ADMIN_USER_IDS env var (fallback).
+                    admin_ids: set[int] = set()
+                    for raw in [
+                        settings.get("admin_chat_id") or "",
+                        os.environ.get("ADMIN_USER_IDS", ""),
+                    ]:
+                        for item in raw.split(","):
+                            try:
+                                admin_ids.add(int(item.strip()))
+                            except (ValueError, AttributeError):
+                                pass
+
+                    is_admin = bool(user_id and user_id in admin_ids)
+
+                    if not is_admin:
+                        maintenance_msg = (
+                            settings.get("maintenance_message")
+                            or "Bot sedang dalam penyelenggaraan. Sila cuba lagi kemudian."
+                        ).strip()
+                        if update.callback_query:
+                            await update.callback_query.answer(
+                                text=maintenance_msg, show_alert=True
+                            )
+                        elif update.message:
+                            await bot.send_message(update.message.chat_id, maintenance_msg)
+                        return  # stop — no further routing
+            except Exception:
+                # Log but never let a settings-fetch failure crash the webhook.
+                print("[WARN] maintenance check failed — continuing normally:", flush=True)
+                print(traceback.format_exc(), flush=True)
+            # ─────────────────────────────────────────────────────────────────
 
             if update.callback_query:
                 print(f"[DEBUG] Callback query received: data={update.callback_query.data!r}", flush=True)
