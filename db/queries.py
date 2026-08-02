@@ -447,6 +447,7 @@ _APP_SETTINGS_DEFAULTS = {
     "maintenance_message": "Bot dalam penyelenggaraan. Sila cuba lagi kemudian.",
     "admin_away_mode": 0,
     "admin_away_message": "Admin sedang tidak berada. Semakan mungkin mengambil masa lebih lama.",
+    "admin_chat_id": None,  # comma-separated admin Telegram IDs stored in DB (live, no redeploy needed)
 }
 
 

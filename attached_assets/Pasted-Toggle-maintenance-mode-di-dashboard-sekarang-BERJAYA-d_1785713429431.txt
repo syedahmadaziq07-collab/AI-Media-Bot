@@ -1,0 +1,29 @@
+Toggle maintenance_mode di dashboard sekarang BERJAYA disimpan ke Supabase (confirmed), TAPI bot production (Vercel) tidak menunjukkan sebarang perubahan — bot terus respons normal walaupun maintenance_mode=TRUE.
+
+Punca: dari audit sebelum ni, kod check maintenance_mode hanya wujud dalam bot.py (versi Replit/polling), yang TIDAK digunakan dalam production. Production sebenar guna api/telegram-webhook.py sepenuhnya.
+
+Buat langkah ni:
+
+1. Dalam api/telegram-webhook.py, SEBAIK SAHAJA update Telegram diterima dan Bot context ready (dalam fungsi _process, sebelum routing ke handle_callback atau handle_command/handle_message), tambah check:
+
+   settings = await asyncio.to_thread(q.get_app_settings)
+   user_id = update.effective_user.id if update.effective_user else None
+   is_admin = user_id in _admin_ids()  # guna fungsi/list admin sedia ada
+   
+   if settings.get("maintenance_mode") and not is_admin:
+       maintenance_msg = settings.get("maintenance_message") or "Bot sedang dalam penyelenggaraan."
+       if update.callback_query:
+           await update.callback_query.answer(text=maintenance_msg, show_alert=True)
+       elif update.message:
+           await bot.send_message(update.message.chat_id, maintenance_msg)
+       return  # HENTIKAN proses selanjutnya
+
+2. Pastikan check ni berlaku SEBELUM apa-apa routing lain (sebelum handle_callback/handle_command dipanggil), supaya SEMUA jenis mesej (command, callback, photo, text) disekat serentak semasa maintenance mode aktif.
+
+3. Bungkus keseluruhan check ni dengan try/except + print(traceback.format_exc(), flush=True), supaya jika fetch app_settings gagal, ia tidak menyebabkan silent crash — sebaliknya log error dan teruskan proses seperti biasa (fail-safe: jika tak boleh check status, jangan block bot).
+
+4. SAMA untuk admin_away_mode — pastikan check ni turut wujud dalam api/telegram-webhook.py punya flow (bukan setakat bot.py), khususnya dalam bahagian yang hantar mesej selepas terima resit top-up.
+
+5. bot.py (versi Replit/polling) SUDAH TIDAK DIGUNAKAN dalam production — boleh kekalkan kod maintenance_mode di situ untuk rujukan, tapi PASTIKAN logic yang sama (bukan fail berasingan) juga wujud dalam api/telegram-webhook.py.
+
+Commit dan push ke GitHub branch main selepas siap.

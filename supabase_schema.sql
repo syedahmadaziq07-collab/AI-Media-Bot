@@ -186,11 +186,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
     maintenance_mode     INTEGER NOT NULL DEFAULT 0,
     maintenance_message  TEXT    DEFAULT 'Bot dalam penyelenggaraan. Sila cuba lagi kemudian.',
     admin_away_mode      INTEGER NOT NULL DEFAULT 0,
-    admin_away_message   TEXT    DEFAULT 'Admin sedang tidak berada. Semakan mungkin mengambil masa lebih lama.'
+    admin_away_message   TEXT    DEFAULT 'Admin sedang tidak berada. Semakan mungkin mengambil masa lebih lama.',
+    admin_chat_id        TEXT    DEFAULT NULL  -- comma-separated admin Telegram IDs; managed via dashboard (Tetapan Am)
 );
 
 -- Ensure a default row always exists
 INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- Migration: add admin_chat_id to existing deployments (safe to run repeatedly)
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS admin_chat_id TEXT DEFAULT NULL;
 
 -- ── Broadcast log ──────────────────────────────────────────────────────────────
 

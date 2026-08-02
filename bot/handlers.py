@@ -58,16 +58,40 @@ def _referral_bonus() -> int:
     return int(os.environ.get("REFERRAL_BONUS", "100"))
 
 
-def _admin_ids() -> set[int]:
-    raw = os.environ.get("ADMIN_USER_IDS", "")
+async def _admin_ids() -> set[int]:
+    """Return the set of admin Telegram user IDs.
+
+    Primary source: ``app_settings.admin_chat_id`` stored in the database
+    (updated live via the dashboard — no redeploy required).
+    Fallback: ``ADMIN_USER_IDS`` environment variable (comma-separated).
+    Both sources are merged so either alone is sufficient.
+    """
     ids: set[int] = set()
-    for item in raw.split(","):
+
+    # 1. DB source — live, no redeploy needed (admin updates via dashboard)
+    try:
+        settings = await asyncio.to_thread(q.get_app_settings)
+        raw_db = (settings.get("admin_chat_id") or "").strip()
+        for item in raw_db.split(","):
+            item = item.strip()
+            if item:
+                try:
+                    ids.add(int(item))
+                except ValueError:
+                    pass
+    except Exception:
+        pass  # DB unavailable — env-var fallback still applies
+
+    # 2. Env-var fallback (bootstrap / override when DB value is empty)
+    raw_env = os.environ.get("ADMIN_USER_IDS", "")
+    for item in raw_env.split(","):
         item = item.strip()
         if item:
             try:
                 ids.add(int(item))
             except ValueError:
                 pass
+
     return ids
 
 
@@ -83,8 +107,8 @@ def _vercel_domain() -> str:
     return os.environ.get("VERCEL_DOMAIN", "").rstrip("/")
 
 
-def _is_admin(user_id: int) -> bool:
-    return user_id in _admin_ids()
+async def _is_admin(user_id: int) -> bool:
+    return user_id in await _admin_ids()
 
 
 # ── Menu ───────────────────────────────────────────────────────────────────────
@@ -297,13 +321,13 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
         await _cancel_topup(bot, chat_id, msg_id, user.id, request_id)
 
     elif data.startswith("topup:approve:"):
-        if not _is_admin(user.id):
+        if not await _is_admin(user.id):
             return
         request_id = data[len("topup:approve:"):]
         await _approve_topup(bot, chat_id, msg_id, user.id, request_id, query)
 
     elif data.startswith("topup:reject:"):
-        if not _is_admin(user.id):
+        if not await _is_admin(user.id):
             return
         request_id = data[len("topup:reject:"):]
         await _reject_topup(bot, chat_id, msg_id, user.id, request_id, query)
@@ -1072,7 +1096,7 @@ async def handle_command(message: Message, bot: Bot) -> None:
         return
 
     if cmd == "addcredit":
-        if not _is_admin(user.id):
+        if not await _is_admin(user.id):
             return
         if len(args) != 2:
             await message.reply_text("Guna: /addcredit USER_ID JUMLAH_SEN")
@@ -1086,7 +1110,7 @@ async def handle_command(message: Message, bot: Bot) -> None:
         return
 
     if cmd == "stats":
-        if not _is_admin(user.id):
+        if not await _is_admin(user.id):
             return
         stats = await _db(q.admin_stats)
         await message.reply_text(
@@ -1096,7 +1120,7 @@ async def handle_command(message: Message, bot: Bot) -> None:
         return
 
     if cmd == "broadcast":
-        if not _is_admin(user.id):
+        if not await _is_admin(user.id):
             return
         msg_text = " ".join(args).strip()
         if not msg_text:

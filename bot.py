@@ -45,22 +45,30 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _admin_ids() -> set[int]:
-    raw = os.environ.get("ADMIN_USER_IDS", "")
-    ids: set[int] = set()
-    for item in raw.split(","):
-        try:
-            ids.add(int(item.strip()))
-        except ValueError:
-            pass
-    return ids
-
-
 async def _is_in_maintenance(user_id: int | None) -> tuple[bool, str]:
-    """Return (blocked, message). Admins are never blocked."""
-    if user_id and user_id in _admin_ids():
+    """Return (blocked, message). Admins are never blocked.
+
+    Admin IDs are resolved from ``app_settings.admin_chat_id`` (DB, live) and
+    the ``ADMIN_USER_IDS`` env var — both sources are merged.  Fetching settings
+    once covers both the admin-ID check and the maintenance-mode check.
+    """
+    try:
+        settings = await asyncio.to_thread(q.get_app_settings)
+    except Exception:
+        settings = {}
+
+    # Build admin set: DB value (live) + env var (fallback), merged
+    admin_ids: set[int] = set()
+    for raw in [settings.get("admin_chat_id") or "", os.environ.get("ADMIN_USER_IDS", "")]:
+        for item in raw.split(","):
+            try:
+                admin_ids.add(int(item.strip()))
+            except (ValueError, AttributeError):
+                pass
+
+    if user_id and user_id in admin_ids:
         return False, ""
-    settings = await asyncio.to_thread(q.get_app_settings)
+
     if settings.get("maintenance_mode"):
         msg = (settings.get("maintenance_message") or "Bot dalam penyelenggaraan.").strip()
         return True, msg
