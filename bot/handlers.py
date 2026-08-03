@@ -875,6 +875,7 @@ async def _create_topup_request(
     expires_at = now + timedelta(minutes=expiry_minutes)
     request_id = uuid4().hex
 
+    print("[DEBUG] Creating topup request", flush=True)
     await _db(q.create_topup_request,
         request_id=request_id,
         user_id=user_id,
@@ -885,6 +886,7 @@ async def _create_topup_request(
         expires_at=expires_at.isoformat(),
     )
     await _db(q.set_conversation_state, user_id, topup_request_id=request_id)
+    print("[DEBUG] Topup request created", flush=True)
 
     pkg_label = f"{pkg['name']} — RM {pkg['price_rm']:.2f}"
     if pkg["bonus_percent"]:
@@ -900,16 +902,18 @@ async def _create_topup_request(
 
     if qr_url:
         try:
+            print(f"[DEBUG] Sending QR photo, url={qr_url}", flush=True)
             await bot.send_photo(chat_id, qr_url, caption=text,
                                  reply_markup=topup_action_markup(request_id),
                                  parse_mode=ParseMode.HTML)
+            print("[DEBUG] QR photo sent successfully", flush=True)
             try:
                 await bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
             return
         except Exception:
-            pass
+            print(f"[DEBUG] send_photo FAILED: {traceback.format_exc()}", flush=True)
 
     await bot.edit_message_text(
         text, chat_id=chat_id, message_id=msg_id,
