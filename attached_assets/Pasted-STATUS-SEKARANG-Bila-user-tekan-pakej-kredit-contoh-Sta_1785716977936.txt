@@ -1,0 +1,20 @@
+STATUS SEKARANG: Bila user tekan pakej kredit (contoh "Starter"), proses masih GAGAL — tiada respons sampai ke user, dan kali terakhir kita jumpa POST ke table topup_requests return 400 Bad Request. Logging terperinci (code, message, details, hint) sudah ditambah tapi saya belum sempat test dan dapatkan output.
+
+ARAHAN: Selesaikan bug ni SEPENUHNYA sekarang — teruskan siasat dan fix sehingga proses "pilih pakej kredit → papar QR code → user boleh proceed hantar resit" BENAR-BENAR berfungsi hujung ke hujung. Jangan berhenti pada tahap "tunjuk log sahaja" — kali ni terus fix sehingga selesai.
+
+PERATURAN KETAT — WAJIB PATUH:
+1. JANGAN ubah flow/logic sedia ada yang sudah berfungsi (contoh: cara /start berfungsi, cara pilih model AI, cara pilih ratio, cara routing callback_data). Fokus HANYA pada bug spesifik dalam proses topup/pemilihan pakej kredit.
+2. JANGAN ubah struktur database (nama table, nama column) melainkan benar-benar perlu untuk fix bug ni — jika perlu ALTER TABLE, beritahu saya SQL yang tepat untuk saya run sendiri di Supabase, JANGAN cuba automatik jalankan DDL dari kod.
+3. JANGAN tukar pendekatan/arkitektur (contoh: jangan tukar dari Supabase ke storan lain, jangan tukar dari webhook ke polling) — kita sudah stabil pada Vercel + Supabase + webhook, kekalkan ini.
+4. Setiap kali jumpa error baru, TERUSKAN gali punca sehingga jumpa root cause sebenar — jangan berhenti di paras "mungkin ini puncanya" tanpa mengesahkan dengan log/data sebenar.
+5. Selepas setiap fix, describe dengan jelas APA yang ditukar dan KENAPA — supaya saya boleh audit setiap perubahan.
+
+LANGKAH KERJA:
+1. Semak semula _log_supabase_error() (atau print debug yang baru ditambah) — pastikan ia BENAR-BENAR akan keluar dalam Vercel runtime logs (guna flush=True, format print yang betul untuk BaseHTTPRequestHandler serverless).
+2. Jika ada isu foreign key (package_id tidak wujud dalam table credit_packages) — semak SAMA ADA data pakej kredit (Starter, Bajet, Pro, Ultra) yang dipaparkan dalam bot BENAR-BENAR datang dari row sebenar dalam table credit_packages, atau ada mismatch antara ID yang bot papar berbanding ID sebenar dalam database.
+3. Jika ada isu NOT NULL constraint atau format data (contoh expires_at, created_at) — pastikan kod hantar format yang serasi dengan column type sebenar dalam Supabase.
+4. Selepas fix dikenal pasti, terapkan fix tu terus dalam kod (bukan setakat cadangan), commit, dan push.
+5. Jika fix memerlukan saya run SQL di Supabase (contoh ALTER TABLE), berikan SQL LENGKAP dan JELAS untuk saya copy-paste terus.
+6. Sahkan dengan saya: adakah anda YAKIN fix ni akan selesaikan masalah sepenuhnya, atau perlukan saya test dan hantar log sekali lagi untuk pengesahan akhir?
+
+Jangan berhenti separuh jalan — teruskan sehingga proses pemilihan pakej kredit benar-benar berfungsi hujung ke hujung.
