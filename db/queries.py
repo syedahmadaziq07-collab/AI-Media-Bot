@@ -240,18 +240,33 @@ def create_topup_request(
     created_at: str,
     expires_at: str,
 ) -> None:
-    get_client().table("topup_requests").insert(
-        {
-            "id": request_id,
-            "user_id": user_id,
-            "package_id": package_id,
-            "amount_rm": amount_rm,
-            "bonus_percent": bonus_percent,
-            "status": "awaiting_receipt",
-            "created_at": created_at,
-            "expires_at": expires_at,
-        }
-    ).execute()
+    payload = {
+        "id": request_id,
+        "user_id": user_id,
+        "package_id": package_id,
+        "amount_rm": amount_rm,
+        "bonus_percent": bonus_percent,
+        "status": "awaiting_receipt",
+        "created_at": created_at,
+        "expires_at": expires_at,
+    }
+    print(f"[DEBUG] create_topup_request payload={payload}", flush=True)
+    try:
+        get_client().table("topup_requests").insert(payload).execute()
+        print("[DEBUG] create_topup_request insert OK", flush=True)
+    except Exception as exc:
+        # Unwrap full postgrest APIError detail — str(exc) is often just "400 Bad Request"
+        code    = getattr(exc, "code",    None)
+        message = getattr(exc, "message", None)
+        details = getattr(exc, "details", None)
+        hint    = getattr(exc, "hint",    None)
+        print(
+            f"[ERROR] create_topup_request FAILED — "
+            f"code={code!r} message={message!r} details={details!r} hint={hint!r} "
+            f"raw={exc!r}",
+            flush=True,
+        )
+        raise
 
 
 def get_topup_request(request_id: str) -> dict:
