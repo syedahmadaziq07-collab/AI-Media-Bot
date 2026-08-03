@@ -877,9 +877,9 @@ async def _create_topup_request(
     instructions = settings["payment_instructions"] if settings and settings.get("payment_instructions") else "Bayar jumlah yang ditetapkan."
     qr_url = settings["qr_image_url"] if settings else None
 
-    from datetime import UTC, datetime, timedelta
     now = datetime.now(UTC)
     expires_at = now + timedelta(minutes=expiry_minutes)
+    expires_at_str = expires_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     request_id = uuid4().hex
 
     print("[DEBUG] Creating topup request", flush=True)
@@ -889,8 +889,7 @@ async def _create_topup_request(
         package_id=pkg_id,
         amount_rm=float(pkg["price_rm"]),
         bonus_percent=pkg["bonus_percent"],
-        created_at=now.isoformat(),
-        expires_at=expires_at.isoformat(),
+        expires_at=expires_at_str,
     )
     await _db(q.set_conversation_state, user_id, topup_request_id=request_id)
     print("[DEBUG] Topup request created", flush=True)

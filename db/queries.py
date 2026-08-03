@@ -237,7 +237,6 @@ def create_topup_request(
     package_id: int,
     amount_rm: float,
     bonus_percent: int,
-    created_at: str,
     expires_at: str,
 ) -> None:
     payload = {
@@ -247,7 +246,7 @@ def create_topup_request(
         "amount_rm": amount_rm,
         "bonus_percent": bonus_percent,
         "status": "awaiting_receipt",
-        "created_at": created_at,
+        # created_at intentionally omitted — DB DEFAULT NOW() handles it
         "expires_at": expires_at,
     }
     print(f"[DEBUG] create_topup_request payload={payload}", flush=True)
