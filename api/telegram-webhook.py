@@ -28,6 +28,7 @@ import db.queries as q
 
 
 async def _process(data: dict, token: str) -> None:
+    print("[DEBUG] _process entered", flush=True)
     try:
         async with Bot(token=token) as bot:
             update = Update.de_json(data, bot)
