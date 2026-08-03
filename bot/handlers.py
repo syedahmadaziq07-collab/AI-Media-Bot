@@ -190,147 +190,154 @@ async def handle_start(message: Message, bot: Bot) -> None:
 # ── Callback query router ──────────────────────────────────────────────────────
 
 async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
-    print("[DEBUG] Calling answer_callback_query", flush=True)
-    await query.answer()
-    data = query.data or ""
-    user = query.from_user
-    if not user or not query.message:
-        return
-
-    chat_id = query.message.chat_id
-    msg_id = query.message.message_id
-
-    # Ensure user exists
+    print(f"[DEBUG] handle_callback entered, data={query.data!r}", flush=True)
     try:
-        await _db(q.get_user, user.id)
-    except Exception:
-        await _db(q.upsert_user, user.id, user.username, user.first_name or str(user.id))
+        print("[DEBUG] Calling answer_callback_query", flush=True)
+        await query.answer()
+        data = query.data or ""
+        user = query.from_user
+        if not user or not query.message:
+            return
 
-    first_name = user.first_name or str(user.id)
+        chat_id = query.message.chat_id
+        msg_id = query.message.message_id
 
-    print(f"[DEBUG] Sending response for callback: data={data!r}", flush=True)
-    # ── Menu navigation ────────────────────────────────────────────────────────
-    if data in ("menu:back", "menu:start"):
-        await _db(q.clear_conversation_state, user.id)
-        await show_main_menu(bot, chat_id, user.id, first_name, message_id=msg_id)
+        # Ensure user exists
+        try:
+            await _db(q.get_user, user.id)
+        except Exception:
+            await _db(q.upsert_user, user.id, user.username, user.first_name or str(user.id))
 
-    elif data == "menu:video":
-        await _db(q.clear_conversation_state, user.id)
-        await _show_model_list(bot, chat_id, msg_id, "video")
+        first_name = user.first_name or str(user.id)
 
-    elif data == "menu:image":
-        await _db(q.clear_conversation_state, user.id)
-        await _show_model_list(bot, chat_id, msg_id, "image")
+        print(f"[DEBUG] Sending response for callback: data={data!r}", flush=True)
+        # ── Menu navigation ────────────────────────────────────────────────────────
+        if data in ("menu:back", "menu:start"):
+            await _db(q.clear_conversation_state, user.id)
+            await show_main_menu(bot, chat_id, user.id, first_name, message_id=msg_id)
 
-    elif data == "menu:balance":
-        await _show_balance(bot, chat_id, msg_id, user.id)
+        elif data == "menu:video":
+            await _db(q.clear_conversation_state, user.id)
+            await _show_model_list(bot, chat_id, msg_id, "video")
 
-    elif data == "menu:history":
-        await _show_history(bot, chat_id, msg_id, user.id, offset=0)
+        elif data == "menu:image":
+            await _db(q.clear_conversation_state, user.id)
+            await _show_model_list(bot, chat_id, msg_id, "image")
 
-    elif data == "menu:credit":
-        await _show_credit_packages(bot, chat_id, msg_id)
+        elif data == "menu:balance":
+            await _show_balance(bot, chat_id, msg_id, user.id)
 
-    elif data == "menu:referral":
-        await _show_referral(bot, chat_id, msg_id, user.id, bot)
+        elif data == "menu:history":
+            await _show_history(bot, chat_id, msg_id, user.id, offset=0)
 
-    elif data == "menu:feedback":
-        await bot.edit_message_text(
-            "Terima kasih. Hantar maklum balas anda dalam mesej seterusnya atau terus hubungi admin.",
-            chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
-        )
+        elif data == "menu:credit":
+            await _show_credit_packages(bot, chat_id, msg_id)
 
-    elif data == "menu:language":
-        await bot.edit_message_text(
-            "Bahasa semasa: Bahasa Melayu.\nTetapan bahasa akan datang.",
-            chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
-        )
+        elif data == "menu:referral":
+            await _show_referral(bot, chat_id, msg_id, user.id, bot)
 
-    elif data == "menu:checkin":
-        await _do_checkin(bot, chat_id, msg_id, user.id)
-
-    elif data == "menu:leaderboard":
-        await _show_leaderboard(bot, chat_id, msg_id, user.id)
-
-    # ── Generation flow ────────────────────────────────────────────────────────
-    elif data.startswith("gen:") and ":model:" in data:
-        parts = data.split(":")  # gen, job_type, model, key
-        if len(parts) >= 4:
-            job_type, model_key = parts[1], parts[3]
-            await _select_model(bot, chat_id, msg_id, user.id, job_type, model_key)
-
-    elif data.startswith("gen:") and ":ratio:" in data:
-        parts = data.split(":")  # gen, job_type, ratio, <ratio_value may have colon>
-        if len(parts) >= 4:
-            job_type = parts[1]
-            ratio = ":".join(parts[3:])  # handles ratios like "16:9"
-            await _select_ratio(bot, chat_id, msg_id, user.id, job_type, ratio)
-
-    elif data.startswith("gen:") and ":back_model" in data:
-        job_type = data.split(":")[1]
-        await _db(q.clear_conversation_state, user.id)
-        await _show_model_list(bot, chat_id, msg_id, job_type)
-
-    elif data.startswith("gen:") and ":back_ratio" in data:
-        job_type = data.split(":")[1]
-        state = await _db(q.get_conversation_state, user.id)
-        model_key = state.get("model_key") if state else None
-        if model_key and model_key in MODEL_BY_KEY:
-            model = MODEL_BY_KEY[model_key]
-            await _show_ratio_selection(bot, chat_id, msg_id, model)
-        else:
-            await _show_model_list(bot, chat_id, msg_id, job_type)
-
-    elif data == "gen:confirm":
-        await _confirm_generation(bot, chat_id, msg_id, user.id)
-
-    elif data == "gen:edit":
-        state = await _db(q.get_conversation_state, user.id)
-        if state:
-            await _db(q.set_conversation_state, user.id, step=AWAIT_INPUT, prompt=None, image_url=None)
-            model = MODEL_BY_KEY.get(state.get("model_key", ""))
-            job_type = state.get("job_type", "video")
-            input_hint = _input_hint(model)
+        elif data == "menu:feedback":
             await bot.edit_message_text(
-                input_hint,
-                chat_id=chat_id, message_id=msg_id,
-                reply_markup=await_input_markup(job_type),
+                "Terima kasih. Hantar maklum balas anda dalam mesej seterusnya atau terus hubungi admin.",
+                chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
             )
 
-    elif data == "gen:cancel":
-        await _db(q.clear_conversation_state, user.id)
-        await show_main_menu(bot, chat_id, user.id, first_name, message_id=msg_id)
+        elif data == "menu:language":
+            await bot.edit_message_text(
+                "Bahasa semasa: Bahasa Melayu.\nTetapan bahasa akan datang.",
+                chat_id=chat_id, message_id=msg_id, reply_markup=back_to_menu_markup(),
+            )
 
-    # ── History ────────────────────────────────────────────────────────────────
-    elif data.startswith("history:"):
-        parts = data.split(":")
-        offset = int(parts[-1]) if parts[-1].isdigit() else 0
-        await _show_history(bot, chat_id, msg_id, user.id, offset=offset)
+        elif data == "menu:checkin":
+            await _do_checkin(bot, chat_id, msg_id, user.id)
 
-    # ── Credit / topup ─────────────────────────────────────────────────────────
-    elif data.startswith("credit:"):
-        pkg_id = int(data.split(":")[1])
-        await _create_topup_request(bot, chat_id, msg_id, user.id, pkg_id)
+        elif data == "menu:leaderboard":
+            await _show_leaderboard(bot, chat_id, msg_id, user.id)
 
-    elif data.startswith("topup:receipt:"):
-        request_id = data[len("topup:receipt:"):]
-        await _request_receipt(bot, chat_id, msg_id, user.id, request_id)
+        # ── Generation flow ────────────────────────────────────────────────────────
+        elif data.startswith("gen:") and ":model:" in data:
+            parts = data.split(":")  # gen, job_type, model, key
+            if len(parts) >= 4:
+                job_type, model_key = parts[1], parts[3]
+                await _select_model(bot, chat_id, msg_id, user.id, job_type, model_key)
 
-    elif data.startswith("topup:cancel:"):
-        request_id = data[len("topup:cancel:"):]
-        await _cancel_topup(bot, chat_id, msg_id, user.id, request_id)
+        elif data.startswith("gen:") and ":ratio:" in data:
+            parts = data.split(":")  # gen, job_type, ratio, <ratio_value may have colon>
+            if len(parts) >= 4:
+                job_type = parts[1]
+                ratio = ":".join(parts[3:])  # handles ratios like "16:9"
+                await _select_ratio(bot, chat_id, msg_id, user.id, job_type, ratio)
 
-    elif data.startswith("topup:approve:"):
-        if not await _is_admin(user.id):
-            return
-        request_id = data[len("topup:approve:"):]
-        await _approve_topup(bot, chat_id, msg_id, user.id, request_id, query)
+        elif data.startswith("gen:") and ":back_model" in data:
+            job_type = data.split(":")[1]
+            await _db(q.clear_conversation_state, user.id)
+            await _show_model_list(bot, chat_id, msg_id, job_type)
 
-    elif data.startswith("topup:reject:"):
-        if not await _is_admin(user.id):
-            return
-        request_id = data[len("topup:reject:"):]
-        await _reject_topup(bot, chat_id, msg_id, user.id, request_id, query)
+        elif data.startswith("gen:") and ":back_ratio" in data:
+            job_type = data.split(":")[1]
+            state = await _db(q.get_conversation_state, user.id)
+            model_key = state.get("model_key") if state else None
+            if model_key and model_key in MODEL_BY_KEY:
+                model = MODEL_BY_KEY[model_key]
+                await _show_ratio_selection(bot, chat_id, msg_id, model)
+            else:
+                await _show_model_list(bot, chat_id, msg_id, job_type)
+
+        elif data == "gen:confirm":
+            await _confirm_generation(bot, chat_id, msg_id, user.id)
+
+        elif data == "gen:edit":
+            state = await _db(q.get_conversation_state, user.id)
+            if state:
+                await _db(q.set_conversation_state, user.id, step=AWAIT_INPUT, prompt=None, image_url=None)
+                model = MODEL_BY_KEY.get(state.get("model_key", ""))
+                job_type = state.get("job_type", "video")
+                input_hint = _input_hint(model)
+                await bot.edit_message_text(
+                    input_hint,
+                    chat_id=chat_id, message_id=msg_id,
+                    reply_markup=await_input_markup(job_type),
+                )
+
+        elif data == "gen:cancel":
+            await _db(q.clear_conversation_state, user.id)
+            await show_main_menu(bot, chat_id, user.id, first_name, message_id=msg_id)
+
+        # ── History ────────────────────────────────────────────────────────────────
+        elif data.startswith("history:"):
+            parts = data.split(":")
+            offset = int(parts[-1]) if parts[-1].isdigit() else 0
+            await _show_history(bot, chat_id, msg_id, user.id, offset=offset)
+
+        # ── Credit / topup ─────────────────────────────────────────────────────────
+        elif data.startswith("credit:"):
+            pkg_id = int(data.split(":")[1])
+            await _create_topup_request(bot, chat_id, msg_id, user.id, pkg_id)
+
+        elif data.startswith("topup:receipt:"):
+            request_id = data[len("topup:receipt:"):]
+            await _request_receipt(bot, chat_id, msg_id, user.id, request_id)
+
+        elif data.startswith("topup:cancel:"):
+            request_id = data[len("topup:cancel:"):]
+            await _cancel_topup(bot, chat_id, msg_id, user.id, request_id)
+
+        elif data.startswith("topup:approve:"):
+            if not await _is_admin(user.id):
+                return
+            request_id = data[len("topup:approve:"):]
+            await _approve_topup(bot, chat_id, msg_id, user.id, request_id, query)
+
+        elif data.startswith("topup:reject:"):
+            if not await _is_admin(user.id):
+                return
+            request_id = data[len("topup:reject:"):]
+            await _reject_topup(bot, chat_id, msg_id, user.id, request_id, query)
+
+    except Exception:
+        print("[ERROR] Exception in handle_callback:", flush=True)
+        print(traceback.format_exc(), flush=True)
+        raise
 
 
 # ── Message router ─────────────────────────────────────────────────────────────
